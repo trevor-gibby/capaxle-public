@@ -1,0 +1,65 @@
+# Bootstrap this reviewed template into the public repository separately.
+# The private-to-public source mirror must not update workflows.
+name: Publish approved alpha
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact approved eleven-package alpha version
+        required: true
+        type: string
+      source_commit:
+        description: Exact approved private source commit (40 lowercase hex)
+        required: true
+        type: string
+      mirror_commit:
+        description: Exact approved public mirror commit (40 lowercase hex)
+        required: true
+        type: string
+      manifest_sha256:
+        description: SHA-256 of tooling/public-release/release-candidate.json
+        required: true
+        type: string
+
+run-name: Publish ${{ inputs.version }} from ${{ inputs.mirror_commit }}
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: ${{ github.repository }}-npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    timeout-minutes: 60
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_SOURCE_COMMIT: ${{ inputs.source_commit }}
+      RELEASE_MIRROR_COMMIT: ${{ inputs.mirror_commit }}
+      RELEASE_MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org/
+      - name: Pin pack toolchain
+        run: npm install --global npm@10.9.2
+      - name: Install and build public source
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Pack and check all eleven packages
+        run: node tooling/public-release/release.mjs pack
+      - name: Enable npm trusted publishing CLI
+        run: npm install --global npm@11.5.1
+      - name: Verify exact approval and publish in dependency order
+        run: node tooling/public-release/release.mjs publish

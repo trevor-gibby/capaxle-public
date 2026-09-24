@@ -1,0 +1,17 @@
+{
+  "version": "0.1.0-alpha.2",
+  "registry": "https://registry.npmjs.org/",
+  "distTag": "alpha",
+  "publicRepository": "trevor-gibby/capaxle-public",
+  "candidateSha256": "b45f479d247763b87d73b8e616af989cc2afc87f9d495087f08bdaac10417839",
+  "originalSourceCommit": "b3d776686b1e56fbb1a64a86c42ca461f998e8e7",
+  "originalMirrorCommit": "7108cfad85623225d6f429aa6c43078da758d236",
+  "originalRunUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36022752069/attempts/1",
+  "previousVersion": "0.1.0-alpha.1",
+  "publishedPrefix": [
+    {
+      "name": "@capaxle/ir",
+      "sha256": "f3d8f1217afa6f12bfe10c2c504a44c4337a12cbcf954e4e8c3760a0acf09beb"
+    }
+  ]
+}

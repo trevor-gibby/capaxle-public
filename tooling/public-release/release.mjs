@@ -282,7 +282,11 @@ async function publish() {
     process.env.GITHUB_REPOSITORY,
   );
   assertPublishContext(process.env, candidate);
-  validateSource(readJson(sourcePath), process.env.RELEASE_SOURCE_COMMIT);
+  validateSource(
+    readJson(sourcePath),
+    process.env.RELEASE_SOURCE_COMMIT,
+    candidate.publicRepository,
+  );
   if (
     sha256(readFileSync(candidatePath)) !== process.env.RELEASE_MANIFEST_SHA256
   )

@@ -68,10 +68,32 @@ export function validateCandidate(candidate, repository) {
   return candidate;
 }
 
-export function validateSource(source, approvedCommit) {
-  assertExactKeys(source, ["sourceCommit"], "public source record");
+export function validateSource(source, approvedCommit, repository) {
+  assertExactKeys(
+    source,
+    ["sourceCommit", "publicRepository", "preview", "filesSha256"],
+    "public source record",
+  );
   if (!hex40.test(approvedCommit) || source.sourceCommit !== approvedCommit)
     throw new Error("release approval: source commit changed");
+  if (
+    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) ||
+    source.publicRepository !== repository
+  )
+    throw new Error("release approval: public repository changed");
+  if (source.preview !== false)
+    throw new Error("public source record: preview snapshot cannot publish");
+  const files = source.filesSha256;
+  if (
+    !files ||
+    typeof files !== "object" ||
+    Array.isArray(files) ||
+    Object.keys(files).length === 0 ||
+    Object.entries(files).some(
+      ([path, digest]) => path.length === 0 || !hex64.test(digest),
+    )
+  )
+    throw new Error("public source record: invalid file SHA-256 map");
 }
 
 export function validatePackageManifest(manifest, name, version, repository) {

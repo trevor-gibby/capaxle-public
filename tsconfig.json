@@ -1,0 +1,38 @@
+{
+  "files": [],
+  "references": [
+    {
+      "path": "./packages/ir"
+    },
+    {
+      "path": "./packages/core"
+    },
+    {
+      "path": "./packages/schema-zod"
+    },
+    {
+      "path": "./packages/compiler"
+    },
+    {
+      "path": "./packages/runtime"
+    },
+    {
+      "path": "./packages/adapter-http"
+    },
+    {
+      "path": "./packages/adapter-cli"
+    },
+    {
+      "path": "./packages/adapter-mcp"
+    },
+    {
+      "path": "./packages/generator-docs"
+    },
+    {
+      "path": "./packages/generator-sdk-ts"
+    },
+    {
+      "path": "./packages/cli"
+    }
+  ]
+}

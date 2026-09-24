@@ -1,0 +1,30 @@
+{
+  "name": "@capaxle/ir",
+  "version": "0.1.0-alpha.2",
+  "type": "module",
+  "engines": {
+    "node": "^22.15.0 || ^24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist/**/*.{js,mjs,cjs,ts,mts,cts,map,json}",
+    "capability-ir.schema.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trevor-gibby/capaxle-public.git",
+    "directory": "packages/ir"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

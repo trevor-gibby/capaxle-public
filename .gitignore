@@ -1,0 +1,39 @@
+# Dependencies and package-manager state
+node_modules/
+.pnpm-store/
+
+# Build and test output
+dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.cache/
+.tmp/
+tmp/
+*.tmp
+.codex-log/
+
+# Local environment and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+.netrc
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Operating system and editor state
+.DS_Store
+.idea/
+*.swp
+*.swo

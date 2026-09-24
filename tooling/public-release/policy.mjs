@@ -1,0 +1,134 @@
+import { createHash } from "node:crypto";
+
+export const packageEdges = Object.freeze({
+  ir: [],
+  core: ["ir"],
+  "schema-zod": ["core", "ir"],
+  compiler: ["core", "ir"],
+  runtime: ["core", "ir"],
+  "adapter-http": ["runtime", "ir"],
+  "adapter-cli": ["runtime", "ir"],
+  "adapter-mcp": ["runtime", "ir"],
+  "generator-docs": ["ir"],
+  "generator-sdk-ts": ["ir"],
+  cli: [
+    "ir",
+    "schema-zod",
+    "compiler",
+    "runtime",
+    "adapter-http",
+    "adapter-cli",
+    "adapter-mcp",
+    "generator-docs",
+    "generator-sdk-ts",
+  ],
+});
+
+export const packageNames = Object.freeze(Object.keys(packageEdges));
+export const registry = "https://registry.npmjs.org/";
+export const distTag = "alpha";
+const hex40 = /^[a-f0-9]{40}$/;
+const hex64 = /^[a-f0-9]{64}$/;
+const alphaVersion = /^0\.\d+\.\d+-alpha\.\d+$/;
+
+export function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+export function assertExactKeys(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error(`${label}: expected object`);
+  const actual = Object.keys(value).sort();
+  if (JSON.stringify(actual) !== JSON.stringify([...keys].sort()))
+    throw new Error(`${label}: unexpected or missing keys`);
+}
+
+export function validateCandidate(candidate, repository) {
+  assertExactKeys(
+    candidate,
+    ["publicRepository", "version", "registry", "distTag", "packages"],
+    "release candidate",
+  );
+  if (!alphaVersion.test(candidate.version))
+    throw new Error("release candidate: invalid alpha version");
+  if (candidate.registry !== registry || candidate.distTag !== distTag)
+    throw new Error("release candidate: registry or dist-tag changed");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository))
+    throw new Error("release candidate: invalid public repository");
+  if (candidate.publicRepository !== repository)
+    throw new Error("release candidate: public repository changed");
+  assertExactKeys(
+    candidate.packages,
+    packageNames.map((name) => `@capaxle/${name}`),
+    "release candidate packages",
+  );
+  for (const [name, digest] of Object.entries(candidate.packages))
+    if (!hex64.test(digest))
+      throw new Error(`release candidate: invalid SHA-256 for ${name}`);
+  return candidate;
+}
+
+export function validateSource(source, approvedCommit) {
+  assertExactKeys(source, ["sourceCommit"], "public source record");
+  if (!hex40.test(approvedCommit) || source.sourceCommit !== approvedCommit)
+    throw new Error("release approval: source commit changed");
+}
+
+export function validatePackageManifest(manifest, name, version, repository) {
+  const fullName = `@capaxle/${name}`;
+  if (manifest.name !== fullName || manifest.version !== version)
+    throw new Error(`${fullName}: package identity or version changed`);
+  if (manifest.private !== undefined || manifest.license !== "Apache-2.0")
+    throw new Error(`${fullName}: package must be public and Apache-2.0`);
+  if (
+    manifest.publishConfig?.access !== "public" ||
+    manifest.publishConfig?.tag !== distTag
+  )
+    throw new Error(`${fullName}: publish configuration changed`);
+  if (
+    manifest.repository?.type !== "git" ||
+    manifest.repository?.url !== `https://github.com/${repository}.git` ||
+    manifest.repository?.directory !== `packages/${name}`
+  )
+    throw new Error(
+      `${fullName}: repository provenance does not match public repo`,
+    );
+
+  const actualEdges = Object.entries(manifest.dependencies ?? {})
+    .filter(([dependency]) => dependency.startsWith("@capaxle/"))
+    .map(([dependency, pinned]) => {
+      if (pinned !== version)
+        throw new Error(`${fullName}: ${dependency} must pin ${version}`);
+      return dependency.slice("@capaxle/".length);
+    })
+    .sort();
+  if (
+    JSON.stringify(actualEdges) !==
+    JSON.stringify([...packageEdges[name]].sort())
+  )
+    throw new Error(`${fullName}: internal dependency graph changed`);
+  for (const field of [
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+  ])
+    if (
+      Object.keys(manifest[field] ?? {}).some((dependency) =>
+        dependency.startsWith("@capaxle/"),
+      )
+    )
+      throw new Error(`${fullName}: unexpected internal ${field}`);
+}
+
+export function publicationOrder() {
+  const sorted = [];
+  const visited = new Set();
+  const visit = (name) => {
+    if (visited.has(name)) return;
+    for (const dependency of packageEdges[name]) visit(dependency);
+    visited.add(name);
+    sorted.push(name);
+  };
+  for (const name of packageNames) visit(name);
+  return sorted;
+}

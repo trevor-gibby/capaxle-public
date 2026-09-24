@@ -1,0 +1,43 @@
+{
+  "name": "@capaxle/cli",
+  "version": "0.1.0-alpha.2",
+  "type": "module",
+  "engines": {
+    "node": "^22.15.0 || ^24.0.0"
+  },
+  "bin": {
+    "capaxle": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.{js,mjs,cjs,ts,mts,cts,map,json}",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@capaxle/adapter-cli": "0.1.0-alpha.2",
+    "@capaxle/ir": "0.1.0-alpha.2",
+    "@capaxle/schema-zod": "0.1.0-alpha.2",
+    "@capaxle/compiler": "0.1.0-alpha.2",
+    "@capaxle/generator-sdk-ts": "0.1.0-alpha.2",
+    "@capaxle/generator-docs": "0.1.0-alpha.2",
+    "@capaxle/runtime": "0.1.0-alpha.2",
+    "@capaxle/adapter-http": "0.1.0-alpha.2",
+    "@capaxle/adapter-mcp": "0.1.0-alpha.2"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trevor-gibby/capaxle-public.git",
+    "directory": "packages/cli"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

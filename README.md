@@ -13,10 +13,10 @@ The same runtime checks the input and applies the capability's access and safety
 rules each time it runs. That means the HTTP endpoint and the agent tool do not
 need separate copies of your business logic.
 
-> **Alpha:** the eleven framework packages are published as
-> `0.1.0-alpha.1`. This source mirror contains an unpublished
-> `0.1.0-alpha.2` candidate. APIs can change. Pin an exact version when
-> installing.
+> **Alpha:** the complete eleven-package release is `0.1.0-alpha.1`.
+> Ten packages are also published at `0.1.0-alpha.2`; `@capaxle/cli` is still
+> pending. The examples pin the complete alpha.1 train until alpha.2 is fully
+> verified. APIs can change; pin an exact version when installing.
 
 ## Getting started
 

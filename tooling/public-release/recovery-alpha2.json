@@ -4,14 +4,77 @@
   "distTag": "alpha",
   "publicRepository": "trevor-gibby/capaxle-public",
   "candidateSha256": "b45f479d247763b87d73b8e616af989cc2afc87f9d495087f08bdaac10417839",
-  "originalSourceCommit": "b3d776686b1e56fbb1a64a86c42ca461f998e8e7",
-  "originalMirrorCommit": "7108cfad85623225d6f429aa6c43078da758d236",
-  "originalRunUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36022752069/attempts/1",
   "previousVersion": "0.1.0-alpha.1",
   "publishedPrefix": [
     {
       "name": "@capaxle/ir",
-      "sha256": "f3d8f1217afa6f12bfe10c2c504a44c4337a12cbcf954e4e8c3760a0acf09beb"
+      "sha256": "f3d8f1217afa6f12bfe10c2c504a44c4337a12cbcf954e4e8c3760a0acf09beb",
+      "sourceCommit": "b3d776686b1e56fbb1a64a86c42ca461f998e8e7",
+      "mirrorCommit": "7108cfad85623225d6f429aa6c43078da758d236",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36022752069/attempts/1"
+    },
+    {
+      "name": "@capaxle/core",
+      "sha256": "b80d1f40f630b7a65e3dc2cc0b7ec39d65aa3e48894067d77d95d1b9b57eeeed",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/schema-zod",
+      "sha256": "48f0b792fef808edee932636bf40625349e7ae49e16f8ca5ab5a7d694aaa9d1d",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/compiler",
+      "sha256": "d63997e074969ebbeb9aac60fe122f69e79c9af5db670ff5236877636717c4da",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/runtime",
+      "sha256": "c1053935120677a669d28db19e4b344a64206933870088fb27f9a4ffc2a95107",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/adapter-http",
+      "sha256": "fe120a6e2018eb9efd101b242094a1a9224b12010152860b6e9e79bc5d15ca87",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/adapter-cli",
+      "sha256": "b7a1d0d4ee7e794a2de910d5237c50b553626473c472801f099109d1fae4c106",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/adapter-mcp",
+      "sha256": "aa9def6fffa1bc0c4378663a88077852e7e8d074bfe442f0e1c8eea3b5a4cce4",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/generator-docs",
+      "sha256": "6f23ea48c361ced084e8e7a22476a3a4bbbb086cf00f118f3d38d38276957bdd",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
+    },
+    {
+      "name": "@capaxle/generator-sdk-ts",
+      "sha256": "71969849ae7e8849cf92e09927a220c4e4aee101ef8bf99de34ec6c21cf58a64",
+      "sourceCommit": "344ac56794a68b3ba15f1ef303c4a996781a6464",
+      "mirrorCommit": "776dac445e239b12d72ff41a893d0a268bfffb2f",
+      "runUrl": "https://github.com/trevor-gibby/capaxle-public/actions/runs/36034621296/attempts/1"
     }
   ]
 }

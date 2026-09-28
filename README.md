@@ -13,10 +13,9 @@ The same runtime checks the input and applies the capability's access and safety
 rules each time it runs. That means the HTTP endpoint and the agent tool do not
 need separate copies of your business logic.
 
-> **Alpha:** the complete eleven-package release is `0.1.0-alpha.1`.
-> Ten packages are also published at `0.1.0-alpha.2`; `@capaxle/cli` is still
-> pending. The examples pin the complete alpha.1 train until alpha.2 is fully
-> verified. APIs can change; pin an exact version when installing.
+> **Alpha:** all eleven framework packages are published and verified at
+> `0.1.0-alpha.2`. The examples pin that exact version. APIs can change;
+> pin an exact version when installing.
 
 ## Getting started
 
@@ -30,7 +29,7 @@ exact version after a later alpha is published.
 ```sh
 npm init -y
 npm pkg set type=module
-npm install @capaxle/core@0.1.0-alpha.1 @capaxle/schema-zod@0.1.0-alpha.1 @capaxle/compiler@0.1.0-alpha.1 @capaxle/cli@0.1.0-alpha.1
+npm install @capaxle/core@0.1.0-alpha.2 @capaxle/schema-zod@0.1.0-alpha.2 @capaxle/compiler@0.1.0-alpha.2 @capaxle/cli@0.1.0-alpha.2
 ```
 
 Here is a small capability that greets a reader. Save it in your project's

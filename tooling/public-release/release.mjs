@@ -10,6 +10,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -221,24 +222,86 @@ export async function cleanRegistryInstall(
       ],
       directory,
     );
-    if (names.includes("cli")) {
-      const { command, args } = installedCliCommand(directory);
-      execute(command, args, directory);
-    }
+    if (names.includes("cli")) checkInstalledCli(directory, { execute });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 }
 
-export function installedCliCommand(directory, platform = process.platform) {
+export function installedCliCommand(
+  directory,
+  project,
+  platform = process.platform,
+) {
   const bin = resolve(
     directory,
     "node_modules/.bin",
     platform === "win32" ? "capaxle.cmd" : "capaxle",
   );
   return platform === "win32"
-    ? { command: "cmd.exe", args: ["/d", "/s", "/c", `""${bin}" --help"`] }
-    : { command: bin, args: ["--help"] };
+    ? {
+        command: "cmd.exe",
+        args: [
+          "/d",
+          "/s",
+          "/c",
+          `""${bin}" check --project "${project}" --json"`,
+        ],
+      }
+    : { command: bin, args: ["check", "--project", project, "--json"] };
+}
+
+export function checkInstalledCli(directory, { execute = run } = {}) {
+  // Keep installed dependencies inside the authoritative project boundary.
+  const project = realpathSync(directory);
+  const source = resolve(project, "src");
+  const config = resolve(project, "capaxle.config.ts");
+  if (existsSync(source) || existsSync(config))
+    throw new Error("CAP_RELEASE_CLI_SMOKE_PROJECT_NOT_ISOLATED");
+  try {
+    const capabilities = resolve(source, "capabilities/hello");
+    mkdirSync(capabilities, { recursive: true });
+    writeFileSync(
+      config,
+      'export default { service: { name: "release-smoke", version: "1.0.0" }, adapters: { cli: { binaryName: "release-smoke" } } };\n',
+    );
+    writeFileSync(
+      resolve(capabilities, "greet.ts"),
+      [
+        'import { defineCapability } from "@capaxle/core";',
+        'import { z } from "@capaxle/schema-zod";',
+        "export default defineCapability({",
+        '  summary: "Verify installed CLI",',
+        "  input: z.strictObject({ name: z.string() }),",
+        "  output: z.strictObject({ greeting: z.string() }),",
+        '  authentication: "public", permissions: "public", exposure: { cli: "public" },',
+        '  effects: { impact: "read" },',
+        "  handler: ({ name }) => ({ greeting: `Hello, ${name}!` }),",
+        "});",
+        "",
+      ].join("\n"),
+    );
+    const { command, args } = installedCliCommand(directory, project);
+    const stdout = execute(command, args, directory);
+    let result;
+    try {
+      result = JSON.parse(stdout);
+    } catch {
+      throw new Error("CAP_RELEASE_CLI_SMOKE_INVALID: check must return JSON");
+    }
+    if (
+      result?.command !== "check" ||
+      result.ok !== true ||
+      result.summary?.capabilities !== 1
+    )
+      throw new Error(
+        "CAP_RELEASE_CLI_SMOKE_INVALID: expected successful one-capability check",
+      );
+    return result;
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+    rmSync(config, { force: true });
+  }
 }
 
 function readLocalVersion() {

@@ -855,7 +855,11 @@ async function validateExistingRootPublication(
       payloadEntry.id !== expectedPayload.id ||
       payloadEntry.path !== expectedPayload.path ||
       payloadEntry.mediaType !== expectedPayload.mediaType ||
-      payloadEntry.target !== expectedPayload.target ||
+      (payloadEntry.target !== expectedPayload.target &&
+        !(
+          payloadEntry.target === "capaxle:agent-manifest@0.1" &&
+          expectedPayload.target === "capaxle:agent-manifest@0.2"
+        )) ||
       payloadEntry.irHash !== index.irHash ||
       payloadEntry.sha256 !== build.payloadSha256
     )

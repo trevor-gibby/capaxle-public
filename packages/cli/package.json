@@ -28,7 +28,8 @@
     "@capaxle/generator-docs": "0.1.0-alpha.2",
     "@capaxle/runtime": "0.1.0-alpha.2",
     "@capaxle/adapter-http": "0.1.0-alpha.2",
-    "@capaxle/adapter-mcp": "0.1.0-alpha.2"
+    "@capaxle/adapter-mcp": "0.1.0-alpha.2",
+    "@capaxle/app": "0.1.0-alpha.2"
   },
   "license": "Apache-2.0",
   "repository": {

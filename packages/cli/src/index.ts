@@ -31,3 +31,10 @@ export type {
   FrameworkDevHost,
   FrameworkDevSnapshot,
 } from "./dev.js";
+
+export { diagnoseLocalProject } from "./doctor.js";
+export type {
+  LocalDoctorCheck,
+  LocalDoctorOptions,
+  LocalDoctorReport,
+} from "./doctor.js";

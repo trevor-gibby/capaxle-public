@@ -361,6 +361,8 @@ export interface CompilerOptions {
   readonly projectRoot: string;
   readonly schemaProviders: readonly SchemaProvider<unknown>[];
   readonly artifactProducers?: readonly CompilerArtifactProducer[];
+  /** Standalone publication requires a local executable for CLI projections. */
+  readonly requireLocalCliBinary?: true;
 }
 
 export interface CompiledArtifact {
@@ -392,6 +394,8 @@ export interface CompilationSuccess {
   readonly irHash: Sha256;
   /** Resolved process-local transport discovery paths; excluded from Capability IR. */
   readonly discovery: DiscoveryContext;
+  /** Process-local authoring mode; excluded from portable Capability IR. */
+  readonly cliRemoteOnly?: true;
   readonly registry: ResolvedCompilerRegistry;
   readonly validators: ReadonlyMap<string, RuntimeValidatorBindings>;
   readonly runtimeBindings: ReadonlyMap<string, CompilerRuntimeBinding>;

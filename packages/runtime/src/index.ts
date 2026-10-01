@@ -43,6 +43,10 @@ export type {
   AdapterInvocationControls,
   AdapterIngress,
   PrincipalTrustToken,
+  AdapterDisclosureAuthenticationView,
+  AdapterDisclosureRequest,
+  AdapterDisclosureResult,
+  RequesterOwnershipToken,
 } from "./types.js";
 
 export {

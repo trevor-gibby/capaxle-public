@@ -220,6 +220,7 @@ export function projectOutputSchema(
     },
   };
   return projector.finish({
+    type: "object",
     oneOf: [
       {
         type: "object",

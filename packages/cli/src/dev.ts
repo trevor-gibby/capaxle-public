@@ -15,9 +15,9 @@ import {
   createRuntimeRegistry,
   RuntimeConfigurationError,
   type RuntimeKernelOptions,
-  type AdapterInvocationRequest,
 } from "@capaxle/runtime";
 import { zodSchemaProvider } from "@capaxle/schema-zod";
+import { createApplication } from "@capaxle/app";
 import type {
   FrameworkCliDependencies,
   FrameworkCliIo,
@@ -181,30 +181,18 @@ export async function startFrameworkDev(
         authenticationProviders: [
           { id: "capaxle.dev.anonymous", authenticate: () => null },
         ],
-        adapters:
-          registry.capabilities.length === 0
-            ? []
-            : [
-                {
-                  id: adapterId,
-                  source: "http" as const,
-                  providerId: "capaxle.dev.anonymous",
-                  capabilities: registry.capabilities.map(({ id }) => id),
-                },
-              ],
+        adapters: [
+          {
+            id: adapterId,
+            source: "http" as const,
+            providerId: "capaxle.dev.anonymous",
+            capabilities: registry.capabilities.map(({ id }) => id),
+          },
+        ],
         ...options.runtimeOptions,
         registry,
       });
-      const ingress =
-        registry.capabilities.length === 0
-          ? {
-              invoke: (request: AdapterInvocationRequest) =>
-                kernel.invoke({ ...request, source: "http" }),
-              authenticate: async () => {
-                throw new RuntimeConfigurationError("CAP_UNAUTHENTICATED");
-              },
-            }
-          : kernel.createAdapterIngress(adapterId);
+      const ingress = kernel.createAdapterIngress(adapterId);
       // Only successful compilation authorizes these canonical fixed input carriers.
       const headerAllowlist = [
         ...new Set(
@@ -315,37 +303,120 @@ export async function runFrameworkDev(
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
-  let host: FrameworkDevHost | undefined;
+  let host: { close(): Promise<void> } | undefined;
+  let devPoll: ReturnType<typeof setInterval> | undefined;
   try {
-    host = await startFrameworkDev(
-      {
-        projectRoot,
-        schemaProviders: dependencies.schemaProviders ?? [zodSchemaProvider],
-        strict: options.strict,
-        ...(options.host === undefined ? {} : { host: options.host }),
-        ...(options.port === undefined ? {} : { port: options.port }),
-        onUpdate: (snapshot, url) => {
-          reported = io !== undefined;
-          if (options.json)
-            io?.stdout.write(
-              `${JSON.stringify({ command: "dev", ok: snapshot.irHash !== undefined, url: url ?? null, ...snapshot })}\n`,
-            );
-          else {
-            if (url)
+    if (
+      dependencies.dev ||
+      options.strict ||
+      (dependencies.schemaProviders !== undefined &&
+        (dependencies.schemaProviders.length !== 1 ||
+          dependencies.schemaProviders[0] !== zodSchemaProvider))
+    )
+      host = await startFrameworkDev(
+        {
+          projectRoot,
+          schemaProviders: dependencies.schemaProviders ?? [zodSchemaProvider],
+          strict: options.strict,
+          ...(options.host === undefined ? {} : { host: options.host }),
+          ...(options.port === undefined ? {} : { port: options.port }),
+          onUpdate: (snapshot, url) => {
+            reported = io !== undefined;
+            if (options.json)
               io?.stdout.write(
-                `Capaxle dev ${url}${snapshot.stale ? " (stale)" : ""}\n`,
+                `${JSON.stringify({ command: "dev", ok: snapshot.irHash !== undefined, url: url ?? null, ...snapshot })}\n`,
               );
-            for (const diagnostic of snapshot.diagnostics)
-              io?.stderr.write(
-                `${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source.file}:${diagnostic.source.line}:${diagnostic.source.column}: ${diagnostic.message}\n`,
-              );
-          }
+            else {
+              if (url)
+                io?.stdout.write(
+                  `Capaxle dev ${url}${snapshot.stale ? " (stale)" : ""}\n`,
+                );
+              for (const diagnostic of snapshot.diagnostics)
+                io?.stderr.write(
+                  `${diagnostic.severity.toUpperCase()} ${diagnostic.code} ${diagnostic.source.file}:${diagnostic.source.line}:${diagnostic.source.column}: ${diagnostic.message}\n`,
+                );
+            }
+          },
         },
-      },
-      dependencies.dev ?? defaultFrameworkDevDependencies,
-    );
+        dependencies.dev ?? defaultFrameworkDevDependencies,
+      );
+    else {
+      const app = await createApplication({
+        mode: "development",
+        projectRoot,
+        serviceId: "capaxle.dev",
+        providers: {
+          authenticationProviders: [
+            { id: "capaxle.dev.anonymous", authenticate: () => null },
+          ],
+        },
+        surfaces: {
+          http: { enabled: true, providerId: "capaxle.dev.anonymous" },
+          mcp: { enabled: true, providerId: "capaxle.dev.anonymous" },
+        },
+      });
+      let listener;
+      try {
+        listener = await app.listen({
+          host: options.host ?? "127.0.0.1",
+          port: options.port ?? 3000,
+        });
+      } catch (error) {
+        await app.close();
+        throw error;
+      }
+      host = app;
+      let lastGeneration: string | undefined;
+      let lastCode: string | undefined;
+      let generationNumber = 0;
+      const report = (): void => {
+        const readiness = app.readiness();
+        const code = readiness.checks.find((check) => check.code)?.code;
+        if (readiness.generation === lastGeneration && code === lastCode)
+          return;
+        if (readiness.generation !== lastGeneration) generationNumber++;
+        lastGeneration = readiness.generation;
+        lastCode = code;
+        const diagnostics: readonly CompilationDiagnostic[] = code
+          ? [
+              {
+                code: code as `CAP_${string}`,
+                severity: "error",
+                phase: "emission",
+                subphase: "emission-producer",
+                message:
+                  "The development host retained its last valid generation.",
+                source: { file: ".", line: 1, column: 1 },
+              },
+            ]
+          : [];
+        const snapshot = {
+          generation: generationNumber,
+          stale: code !== undefined,
+          irHash: readiness.generation?.replace(/:\d+$/, ""),
+          diagnostics,
+        };
+        reported = io !== undefined;
+        if (options.json)
+          io?.stdout.write(
+            `${JSON.stringify({ command: "dev", ok: readiness.ready, url: listener.url, ...snapshot })}\n`,
+          );
+        else {
+          io?.stdout.write(
+            `Capaxle dev ${listener.url}${snapshot.stale ? " (stale)" : ""}\n`,
+          );
+          for (const diagnostic of diagnostics)
+            io?.stderr.write(
+              `${diagnostic.severity.toUpperCase()} ${diagnostic.code}: ${diagnostic.message}\n`,
+            );
+        }
+      };
+      report();
+      devPoll = setInterval(report, 25);
+      devPoll.unref();
+    }
     if (!stop) await stopped;
-    await host.close();
+    await host!.close();
     return Object.freeze({
       exitCode: 0,
       json: false,
@@ -370,6 +441,7 @@ export async function runFrameworkDev(
       diagnostics: reported ? Object.freeze([]) : diagnostics,
     });
   } finally {
+    if (devPoll) clearInterval(devPoll);
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     if (host) await host.close();

@@ -19,6 +19,10 @@ import {
   MCP_INVOCATION_META,
   MCP_PROFILE_VERSION,
   MCP_PROTOCOL_VERSION,
+  MCP_LEGACY_PROTOCOL_VERSION,
+  MCP_LEGACY_TARGET,
+  MCP_SUPPORTED_VERSIONS,
+  MCP_TARGETS,
   MCP_TARGET,
   MCP_TOOL_META,
   ProjectionError,
@@ -57,10 +61,40 @@ export interface McpToolDefinition {
 }
 
 export interface McpToolResult {
-  readonly resultType: "complete";
+  readonly resultType?: "complete";
+  readonly _meta?: Readonly<Record<string, JsonValue>>;
   readonly isError: boolean;
   readonly structuredContent: InvocationResult;
   readonly content: readonly [{ readonly type: "text"; readonly text: string }];
+}
+
+export interface McpDiscoveryResult {
+  readonly [key: string]: unknown;
+  readonly resultType: "complete";
+  readonly supportedVersions: readonly (typeof MCP_SUPPORTED_VERSIONS)[number][];
+  readonly capabilities: Readonly<{ tools: Readonly<Record<string, never>> }>;
+  readonly ttlMs: 0;
+  readonly cacheScope: "private";
+  readonly _meta: Readonly<{
+    "io.modelcontextprotocol/serverInfo": Readonly<{
+      name: string;
+      version: string;
+    }>;
+  }>;
+}
+
+export interface McpListToolsResult {
+  readonly [key: string]: unknown;
+  readonly tools: readonly McpToolDefinition[];
+  readonly resultType?: "complete";
+  readonly ttlMs?: 0;
+  readonly cacheScope?: "private";
+  readonly _meta?: Readonly<{
+    "io.modelcontextprotocol/serverInfo": Readonly<{
+      name: string;
+      version: string;
+    }>;
+  }>;
 }
 
 export interface McpJsonRpcError {
@@ -74,6 +108,7 @@ export interface McpCallParams {
 }
 
 export interface McpRequestContext {
+  readonly protocolVersion?: (typeof MCP_SUPPORTED_VERSIONS)[number];
   readonly credentials?: unknown;
   readonly signal?: AbortSignal;
   readonly clientCanSendInvocationMetadata?: boolean;
@@ -108,7 +143,17 @@ export interface McpAdapterOptions {
 }
 
 export interface McpAdapter {
-  readonly target: typeof MCP_TARGET;
+  readonly target: typeof MCP_TARGET | typeof MCP_LEGACY_TARGET;
+  readonly serverInfo: Readonly<{ name: string; version: string }>;
+  validateResponseLimit(limit: number): void;
+  discloseRequester(
+    context?: McpRequestContext,
+  ): ReturnType<AdapterIngress["disclose"]>;
+  sameRequester(
+    ...requesters: Parameters<AdapterIngress["sameRequester"]>
+  ): boolean;
+  discover(context?: McpRequestContext): Promise<McpDiscoveryResult>;
+  listToolsResult(context?: McpRequestContext): Promise<McpListToolsResult>;
   readonly endpoint: string;
   readonly irHash: string;
   readonly discoveryContext: DiscoveryContext;
@@ -170,29 +215,21 @@ function validateEndpointReservation(
 }
 
 function visibilityContext(
+  trusted: Awaited<ReturnType<AdapterIngress["disclose"]>>,
   context: McpRequestContext,
 ): McpToolVisibilityContext {
-  const trusted = context.discovery;
-  if (trusted === undefined) return deepFreeze({ visibility: "public" });
-  let inert: JsonValue;
-  try {
-    inert = copyJsonData(trusted);
-  } catch {
-    throw new ProjectionError("CAP_INPUT_INVALID");
-  }
-  if (
-    !dataObject(inert) ||
-    (inert.visibility !== "authenticated" && inert.visibility !== "private") ||
-    Object.keys(inert).some(
-      (key) => key !== "visibility" && key !== "principal",
-    )
-  )
-    throw new ProjectionError("CAP_INPUT_INVALID");
+  const levels = { public: 0, authenticated: 1, private: 2 } as const;
+  const restriction = context.discovery?.visibility;
+  const visibility =
+    restriction !== undefined &&
+    levels[restriction] < levels[trusted.visibility]
+      ? restriction
+      : trusted.visibility;
   return deepFreeze({
-    visibility: inert.visibility,
-    ...(Object.hasOwn(inert, "principal")
-      ? { principal: inert.principal }
-      : {}),
+    visibility,
+    ...(trusted.principal === undefined
+      ? {}
+      : { principal: trusted.principal as unknown as JsonValue }),
   });
 }
 
@@ -305,7 +342,11 @@ export interface McpSnapshotOptions {
 }
 
 export function generateMcpSnapshot(options: McpSnapshotOptions): JsonValue {
-  if ((options.target ?? MCP_TARGET) !== MCP_TARGET)
+  if (
+    !MCP_TARGETS.includes(
+      (options.target ?? MCP_TARGET) as (typeof MCP_TARGETS)[number],
+    )
+  )
     throw new ProjectionError("CAP_MCP_TARGET_UNSUPPORTED", {
       target: options.target ?? "",
     });
@@ -321,13 +362,26 @@ export function generateMcpSnapshot(options: McpSnapshotOptions): JsonValue {
     generatedBy: { name: GENERATOR_NAME, version: GENERATOR_VERSION },
     irHash: options.irHash,
     profileVersion: MCP_PROFILE_VERSION,
-    protocolVersion: MCP_PROTOCOL_VERSION,
-    target: MCP_TARGET,
-    transport: {
-      endpoint: discovery.mcp.endpoint,
-      mode: "stateless",
-      toolsCallResponse: "request-scoped-sse",
-    },
+    profiles: [
+      {
+        protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
+        target: MCP_LEGACY_TARGET,
+        transport: {
+          endpoint: discovery.mcp.endpoint,
+          mode: "sessionful",
+          toolsCallResponse: "request-scoped-sse",
+        },
+      },
+      {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        target: MCP_TARGET,
+        transport: {
+          endpoint: discovery.mcp.endpoint,
+          mode: "stateless",
+          toolsCallResponse: "request-scoped-sse",
+        },
+      },
+    ],
     response: {
       resultType: "complete",
       tools: entries.map((entry) => entry.tool),
@@ -335,10 +389,27 @@ export function generateMcpSnapshot(options: McpSnapshotOptions): JsonValue {
   } as unknown as JsonValue);
 }
 
-export function toMcpToolResult(result: InvocationResult): McpToolResult {
+export function toMcpToolResult(
+  result: InvocationResult,
+  options: Readonly<{
+    protocolVersion?: (typeof MCP_SUPPORTED_VERSIONS)[number];
+    serverInfo?: { name: string; version: string };
+  }> = {},
+): McpToolResult {
   const envelope = copyJsonData(result) as unknown as InvocationResult;
   return deepFreeze({
-    resultType: "complete",
+    ...(options.protocolVersion === MCP_LEGACY_PROTOCOL_VERSION
+      ? {}
+      : {
+          resultType: "complete" as const,
+          ...(options.serverInfo
+            ? {
+                _meta: {
+                  "io.modelcontextprotocol/serverInfo": options.serverInfo,
+                },
+              }
+            : {}),
+        }),
     isError: envelope.ok === false,
     structuredContent: envelope,
     content: [{ type: "text", text: jcs(envelope as unknown as JsonValue) }],
@@ -412,7 +483,9 @@ function candidateFor(
     return invalidMetadata();
   const rawValue = container?.[MCP_INVOCATION_META];
   if (rawValue === undefined)
-    return !canSendMetadata && capability.effects.confirmation === "required"
+    return !canSendMetadata &&
+      (capability.effects.confirmation === "required" ||
+        capability.effects.idempotency === "key")
       ? {
           ok: false,
           code: "CAP_MCP_CLIENT_METADATA_REQUIRED",
@@ -442,7 +515,11 @@ function candidateFor(
     (!Number.isInteger(value.timeoutMs) || (value.timeoutMs as number) <= 0)
   )
     return invalidMetadata();
-  if (!canSendMetadata && capability.effects.confirmation === "required")
+  if (
+    !canSendMetadata &&
+    (capability.effects.confirmation === "required" ||
+      capability.effects.idempotency === "key")
+  )
     return {
       ok: false,
       code: "CAP_MCP_CLIENT_METADATA_REQUIRED",
@@ -477,8 +554,39 @@ function baseParams(value: unknown): Record<string, unknown> | null {
   return record;
 }
 
+async function awaitVisibility(
+  work: () => boolean | Promise<boolean>,
+  signal: AbortSignal | undefined,
+): Promise<boolean> {
+  if (signal?.aborted) throw new ProjectionError("CAP_CANCELLED");
+  if (signal === undefined) return work();
+  let cancel!: () => void;
+  const cancellation = new Promise<never>((_, reject) => {
+    cancel = () => reject(new ProjectionError("CAP_CANCELLED"));
+    signal.addEventListener("abort", cancel, { once: true });
+  });
+  try {
+    if (signal.aborted) cancel();
+    const result = await Promise.race([
+      Promise.resolve().then(() => {
+        if (signal.aborted) throw new ProjectionError("CAP_CANCELLED");
+        return work();
+      }),
+      cancellation,
+    ]);
+    if (signal.aborted) throw new ProjectionError("CAP_CANCELLED");
+    return result;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
 export function createMcpAdapter(options: McpAdapterOptions): McpAdapter {
-  if ((options.target ?? MCP_TARGET) !== MCP_TARGET)
+  if (
+    !MCP_TARGETS.includes(
+      (options.target ?? MCP_TARGET) as (typeof MCP_TARGETS)[number],
+    )
+  )
     throw new ProjectionError("CAP_MCP_TARGET_UNSUPPORTED");
   verifyDocumentHash(options.document, options.irHash);
   const discovery = validateDiscoveryContext(options.discovery);
@@ -486,36 +594,143 @@ export function createMcpAdapter(options: McpAdapterOptions): McpAdapter {
   const disclosureProfile = options.profile ?? "private";
   const entries = projectedEntries(options.document, options.irHash, "private");
 
+  const discloseRequester = (context: McpRequestContext = {}) =>
+    options.ingress.disclose({
+      ...(Object.hasOwn(context, "credentials")
+        ? { credentials: context.credentials }
+        : {}),
+      ...(context.signal === undefined ? {} : { signal: context.signal }),
+    });
   const visible = async (
     entry: (typeof entries)[number],
-    context: McpRequestContext,
+    visibility: McpToolVisibilityContext,
+    signal: AbortSignal | undefined,
   ): Promise<boolean> =>
     options.isToolVisible
-      ? options.isToolVisible(
-          {
-            id: entry.capability.id,
-            version: entry.capability.version,
-            exposure: exposure(entry.capability),
-          },
-          visibilityContext(context),
+      ? awaitVisibility(
+          () =>
+            options.isToolVisible!(
+              {
+                id: entry.capability.id,
+                version: entry.capability.version,
+                exposure: exposure(entry.capability),
+              },
+              visibility,
+            ),
+          signal,
         )
       : true;
 
+  const serverInfo = {
+    name: options.document.service.name,
+    version: options.document.service.version,
+  };
+  const modernMetadata = {
+    _meta: { "io.modelcontextprotocol/serverInfo": serverInfo },
+  };
+  const discoveryResult: McpDiscoveryResult = deepFreeze({
+    resultType: "complete",
+    supportedVersions: [...MCP_SUPPORTED_VERSIONS],
+    capabilities: { tools: {} },
+    ttlMs: 0,
+    cacheScope: "private",
+    ...modernMetadata,
+  });
   return deepFreeze({
-    target: MCP_TARGET,
+    target: (options.target ?? MCP_TARGET) as
+      typeof MCP_TARGET | typeof MCP_LEGACY_TARGET,
+    serverInfo,
+    validateResponseLimit(limit: number) {
+      // Startup inspects canonical public projection only. Caller-specific
+      // authentication and optional coarse restrictions never run here.
+      const tools = entries
+        .filter(
+          (entry) =>
+            included(entry.capability, disclosureProfile) &&
+            exposure(entry.capability) === "public",
+        )
+        .map((entry) => entry.tool);
+      const list = {
+        tools,
+        resultType: "complete",
+        ttlMs: 0,
+        cacheScope: "private",
+        ...modernMetadata,
+      };
+      // A JSON escape costs at most six bytes per UTF-16 code unit. These
+      // values conservatively cover the protocol and trusted correlation bounds.
+      const boundedId = "\u0000".repeat(128);
+      const diagnostic = toMcpToolResult(
+        {
+          ok: false,
+          error: {
+            code: "CAP_MCP_RESPONSE_TOO_LARGE",
+            status: "internal",
+            message: "MCP response exceeds the configured limit.",
+            retryable: false,
+            correlationId: boundedId,
+            details: {
+              executionState: "unknown",
+              executionMayHaveOccurred: true,
+            },
+          },
+        },
+        { serverInfo },
+      );
+      for (const result of [discoveryResult, list, diagnostic]) {
+        const bytes =
+          canonicalBytes({
+            jsonrpc: "2.0",
+            id: boundedId,
+            result,
+          } as unknown as JsonValue).byteLength + 64;
+        if (!Number.isSafeInteger(limit) || bytes > limit)
+          throw new ProjectionError("CAP_MCP_RESPONSE_TOO_LARGE");
+      }
+    },
+    discloseRequester,
+    sameRequester(...requesters: Parameters<AdapterIngress["sameRequester"]>) {
+      return options.ingress.sameRequester(...requesters);
+    },
+    async discover(context: McpRequestContext = {}) {
+      await discloseRequester(context);
+      return discoveryResult;
+    },
+    async listToolsResult(context: McpRequestContext = {}) {
+      const tools = await this.listTools(context);
+      return deepFreeze({
+        tools,
+        ...(context.protocolVersion === MCP_LEGACY_PROTOCOL_VERSION
+          ? {}
+          : {
+              resultType: "complete",
+              ttlMs: 0,
+              cacheScope: "private",
+              ...modernMetadata,
+            }),
+      });
+    },
     endpoint: discovery.mcp.endpoint,
     irHash: options.irHash,
     discoveryContext: discovery,
     async listTools(context: McpRequestContext = {}) {
-      const visibility = visibilityContext(context);
+      const visibility = visibilityContext(
+        await discloseRequester(context).catch((error: unknown) => {
+          if (context.signal?.aborted)
+            throw new ProjectionError("CAP_CANCELLED");
+          throw error;
+        }),
+        context,
+      );
       const tools: McpToolDefinition[] = [];
       for (const entry of entries)
         if (
           included(entry.capability, disclosureProfile) &&
           permitsExposure(exposure(entry.capability), visibility) &&
-          (await visible(entry, context))
+          (await visible(entry, visibility, context.signal))
         )
           tools.push(entry.tool);
+      if (context.signal?.aborted) throw new ProjectionError("CAP_CANCELLED");
       return deepFreeze(tools);
     },
     async callTool(params: unknown, context: McpRequestContext = {}) {
@@ -530,17 +745,43 @@ export function createMcpAdapter(options: McpAdapterOptions): McpAdapter {
       const entry = entries.find(
         (candidate) => candidate.tool.name === parsed.name,
       );
-      if (!entry)
+      if (!entry || !included(entry.capability, disclosureProfile))
         return { jsonrpcError: { code: -32602, message: "Unknown tool." } };
-      let adapterCandidate: Candidate;
-      try {
-        adapterCandidate = candidateFor(
-          entry.capability,
-          parsed,
-          context.clientCanSendInvocationMetadata !== false,
-        );
-      } catch {
-        adapterCandidate = invalidMetadata();
+      let adapterCandidate: Candidate | undefined;
+      if (options.isToolVisible) {
+        try {
+          if (
+            !(await visible(
+              entry,
+              visibilityContext(await discloseRequester(context), context),
+              context.signal,
+            ))
+          )
+            return { jsonrpcError: { code: -32602, message: "Unknown tool." } };
+        } catch {
+          // Cancellation never grants visibility. A known exposed capability
+          // still enters the registered kernel with its already-aborted signal,
+          // which alone creates the trusted not-started cancellation result.
+          // Other prefilter faults become closed kernel rejections without
+          // inspecting or copying exception data.
+          if (!context.signal?.aborted)
+            adapterCandidate = {
+              ok: false,
+              code: "CAP_INTERNAL",
+              status: "internal",
+            };
+        }
+      }
+      if (adapterCandidate === undefined) {
+        try {
+          adapterCandidate = candidateFor(
+            entry.capability,
+            parsed,
+            context.clientCanSendInvocationMetadata !== false,
+          );
+        } catch {
+          adapterCandidate = invalidMetadata();
+        }
       }
       const request = {
         capability: entry.capability.id,
@@ -552,7 +793,10 @@ export function createMcpAdapter(options: McpAdapterOptions): McpAdapter {
         adapterCandidate,
       };
       const result = await options.ingress.invoke(request);
-      return toMcpToolResult(result);
+      return toMcpToolResult(result, {
+        protocolVersion: context.protocolVersion ?? MCP_PROTOCOL_VERSION,
+        serverInfo,
+      });
     },
   });
 }

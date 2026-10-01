@@ -16,6 +16,7 @@
     { "path": "../runtime" },
     { "path": "../adapter-cli" },
     { "path": "../adapter-http" },
-    { "path": "../adapter-mcp" }
+    { "path": "../adapter-mcp" },
+    { "path": "../app" }
   ]
 }

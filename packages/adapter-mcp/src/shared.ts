@@ -3,15 +3,23 @@ import type { JsonValue } from "@capaxle/ir";
 import type { RuntimeDocument } from "@capaxle/runtime";
 
 export const MCP_TARGET =
-  "mcp@2026-07-28/streamable-http/tools-unary-v2" as const;
+  "mcp@2026-07-28/streamable-http/tools-unary-v3" as const;
 export const MCP_PROTOCOL_VERSION = "2026-07-28" as const;
-export const MCP_PROFILE_VERSION = "0.2" as const;
+export const MCP_LEGACY_PROTOCOL_VERSION = "2025-11-25" as const;
+export const MCP_LEGACY_TARGET =
+  "mcp@2025-11-25/streamable-http/tools-unary-v3" as const;
+export const MCP_SUPPORTED_VERSIONS = [
+  MCP_PROTOCOL_VERSION,
+  MCP_LEGACY_PROTOCOL_VERSION,
+] as const;
+export const MCP_TARGETS = [MCP_TARGET, MCP_LEGACY_TARGET] as const;
+export const MCP_PROFILE_VERSION = "0.3" as const;
 export const MCP_INVOCATION_META = "com.capaxle/invocation" as const;
 export const MCP_TOOL_META = "com.capaxle/tool" as const;
 export const LEGACY_MCP_INVOCATION_META =
   "io.github.trevor-gibby.capabuild/invocation" as const;
 export const GENERATOR_NAME = "@capaxle/adapter-mcp" as const;
-export const GENERATOR_VERSION = "0.1.0-alpha.2" as const;
+export const GENERATOR_VERSION = "0.1.0-alpha.2.mcp-profile.0.3" as const;
 
 const IR_HASH = /^sha256:[0-9a-f]{64}$/;
 const CLI_BINARY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

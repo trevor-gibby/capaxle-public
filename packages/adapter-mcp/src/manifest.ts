@@ -9,6 +9,10 @@ import {
   GENERATOR_NAME,
   GENERATOR_VERSION,
   MCP_TARGET,
+  MCP_LEGACY_TARGET,
+  MCP_LEGACY_PROTOCOL_VERSION,
+  MCP_PROTOCOL_VERSION,
+  MCP_PROFILE_VERSION,
   ProjectionError,
   resolvedDiscoveryContext,
   validateDiscoveryContext,
@@ -48,13 +52,48 @@ export interface AgentManifestV01 {
     readonly http: DiscoveryContext["http"];
     readonly mcp: {
       readonly endpoint: string;
-      readonly target: typeof MCP_TARGET;
+      readonly target: "mcp@2026-07-28/streamable-http/tools-unary-v2";
     };
   };
   readonly namespaces: readonly string[];
   readonly capabilities: readonly JsonValue[];
   readonly build?: AgentManifestBuildLocatorV01;
 }
+
+export interface AgentManifestV02 extends Omit<
+  AgentManifestV01,
+  "manifestVersion" | "discovery"
+> {
+  readonly manifestVersion: "0.2";
+  readonly discovery: {
+    readonly http: DiscoveryContext["http"];
+    readonly mcp?: {
+      readonly endpoint: string;
+      readonly profiles: readonly Readonly<{
+        protocolVersion:
+          typeof MCP_PROTOCOL_VERSION | typeof MCP_LEGACY_PROTOCOL_VERSION;
+        target: typeof MCP_TARGET | typeof MCP_LEGACY_TARGET;
+        profileVersion: typeof MCP_PROFILE_VERSION;
+      }>[];
+    };
+    readonly cli?: ManifestCliLocator;
+  };
+}
+
+export interface ManifestCliLocator {
+  readonly protocolVersion: "0.1";
+  readonly endpoints: Readonly<{
+    collection: string;
+    detailTemplate: string;
+    schemaTemplate: string;
+    invoke: string;
+  }>;
+  readonly externalUrl?: string;
+}
+
+export type ManifestRemoteCli = Omit<ManifestCliLocator, "protocolVersion">;
+
+const cliCommandToken = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export interface AgentManifestOptions {
   readonly document: RuntimeDocument;
@@ -63,6 +102,8 @@ export interface AgentManifestOptions {
   readonly profile?: ManifestProfile;
   readonly visibility?: readonly ManifestVisibilityEntry[];
   readonly cliBinary?: string;
+  readonly mcpEnabled?: boolean;
+  readonly remoteCli?: ManifestRemoteCli;
 }
 
 const projection = (capability: Capability, name: ManifestInterface) =>
@@ -180,12 +221,141 @@ const rfc3986 = (value: string) =>
     (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
   );
 
+function validateRemoteCli(value: unknown): ManifestRemoteCli {
+  if (
+    !dataObject(value) ||
+    Object.keys(value).some(
+      (key) => key !== "endpoints" && key !== "externalUrl",
+    ) ||
+    !dataObject(value.endpoints) ||
+    Object.keys(value.endpoints).sort().join("\0") !==
+      ["collection", "detailTemplate", "schemaTemplate", "invoke"]
+        .sort()
+        .join("\0")
+  )
+    throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+  const endpoints = value.endpoints;
+  if (
+    ["collection", "detailTemplate", "schemaTemplate", "invoke"].some(
+      (key) => typeof endpoints[key] !== "string",
+    )
+  )
+    throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+  try {
+    validateDiscoveryContext({
+      http: {
+        collection: endpoints.collection,
+        detailTemplate: endpoints.detailTemplate,
+        schemaTemplate: endpoints.schemaTemplate,
+      },
+      mcp: { endpoint: endpoints.invoke },
+    });
+  } catch {
+    throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+  }
+  const paths = [
+    endpoints.collection as string,
+    endpoints.detailTemplate as string,
+    endpoints.schemaTemplate as string,
+    endpoints.invoke as string,
+  ];
+  for (const path of paths) {
+    for (const segment of path.split("/").slice(1)) {
+      if (segment === "{id}") continue;
+      let decoded: string;
+      try {
+        decoded = decodeURIComponent(segment);
+      } catch {
+        throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+      }
+      if (
+        decoded === "." ||
+        decoded === ".." ||
+        decoded.includes("/") ||
+        decoded.includes("\\") ||
+        /[\u0000-\u001f\u007f-\u009f]/u.test(decoded)
+      )
+        throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+    }
+  }
+  for (let left = 0; left < paths.length; left++) {
+    for (let right = left + 1; right < paths.length; right++) {
+      const a = paths[left]!.split("/");
+      const b = paths[right]!.split("/");
+      if (
+        a.length === b.length &&
+        a.every(
+          (part, index) =>
+            part === b[index] || part === "{id}" || b[index] === "{id}",
+        )
+      )
+        throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+    }
+  }
+  const externalUrl = value.externalUrl;
+  if (externalUrl !== undefined) {
+    if (typeof externalUrl !== "string")
+      throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+    let url: URL;
+    try {
+      url = new URL(externalUrl);
+    } catch {
+      throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+    }
+    const loopback =
+      url.hostname === "localhost" ||
+      url.hostname === "127.0.0.1" ||
+      url.hostname === "[::1]";
+    const mount = url.pathname;
+    const rawLocation = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/?#]*(\/[^?#]*)?/.exec(
+      externalUrl,
+    );
+    const rawMount = rawLocation?.[1] ?? "/";
+    const validMount =
+      mount === "/" ||
+      (mount.startsWith("/") &&
+        !mount.startsWith("//") &&
+        !mount.endsWith("/") &&
+        !/[?#\\\0%]/.test(mount) &&
+        mount
+          .split("/")
+          .slice(1)
+          .every((part) => part !== "" && part !== "." && part !== ".."));
+    if (
+      !rawLocation ||
+      (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      rawMount !== mount ||
+      !validMount ||
+      (mount !== "/" &&
+        Object.values(endpoints).some(
+          (path) => typeof path !== "string" || !path.startsWith(`${mount}/`),
+        ))
+    )
+      throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+  }
+  return deepFreeze({
+    endpoints: {
+      collection: endpoints.collection as string,
+      detailTemplate: endpoints.detailTemplate as string,
+      schemaTemplate: endpoints.schemaTemplate as string,
+      invoke: endpoints.invoke as string,
+    },
+    ...(externalUrl === undefined ? {} : { externalUrl }),
+  });
+}
+
 function manifestCapability(
   capability: Capability,
   profile: ManifestProfile,
   live: Set<string> | null,
   discovery: DiscoveryContext,
   cliBinary: string | undefined,
+  mcpEnabled: boolean,
+  remoteCliEnabled: boolean,
 ): JsonValue | null {
   const exposure: Record<string, JsonValue> = {};
   const interfaces: Record<string, JsonValue> = {};
@@ -200,7 +370,7 @@ function manifestCapability(
         (profile === "public" && canonicalExposure === "public") ||
         (profile === "live" &&
           live!.has(`${capability.id}\0${capability.version}\0${name}`)));
-    if (!selected) continue;
+    if (!selected || (name === "mcp" && !mcpEnabled)) continue;
     exposure[name] = canonicalExposure as Exposure;
     if (name === "http") {
       if (typeof item.method !== "string" || typeof item.path !== "string")
@@ -211,20 +381,31 @@ function manifestCapability(
         rfc3986(capability.id),
       );
     } else if (name === "cli") {
-      verifyCliBinary(cliBinary);
+      if (cliBinary === undefined && !remoteCliEnabled)
+        throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
+      if (cliBinary !== undefined) verifyCliBinary(cliBinary);
       if (
         !Array.isArray(item.command) ||
-        item.command.some((part) => typeof part !== "string")
+        item.command.length === 0 ||
+        item.command.some(
+          (part) => typeof part !== "string" || !cliCommandToken.test(part),
+        )
       )
         throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
-      interfaces.cli = { command: [cliBinary, ...item.command] };
-      describe.cli = [
-        cliBinary,
-        "capabilities",
-        "describe",
-        capability.id,
-        "--json",
-      ];
+      interfaces.cli = {
+        ...(cliBinary === undefined
+          ? {}
+          : { command: [cliBinary, ...item.command] }),
+        ...(remoteCliEnabled ? { remoteCommand: [...item.command] } : {}),
+      };
+      if (cliBinary !== undefined)
+        describe.cli = [
+          cliBinary,
+          "capabilities",
+          "describe",
+          capability.id,
+          "--json",
+        ];
     } else {
       if (typeof item.toolName !== "string")
         throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
@@ -260,10 +441,21 @@ function manifestCapability(
 
 export function generateAgentManifest(
   options: AgentManifestOptions,
-): AgentManifestV01 {
+): AgentManifestV02 {
   verifyDocumentHash(options.document, options.irHash);
   const discovery = validateDiscoveryContext(options.discovery);
+  const remoteCli =
+    options.remoteCli === undefined
+      ? undefined
+      : validateRemoteCli(options.remoteCli);
   const profile = options.profile ?? "private";
+  if (
+    options.mcpEnabled !== undefined &&
+    typeof options.mcpEnabled !== "boolean"
+  )
+    throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED", {
+      reason: "invalid_mcp_enabled",
+    });
   if (!["private", "public", "live"].includes(profile))
     throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED", {
       reason: "invalid_profile",
@@ -290,6 +482,8 @@ export function generateAgentManifest(
         live,
         discovery,
         options.cliBinary,
+        options.mcpEnabled === true,
+        remoteCli !== undefined,
       ),
     )
     .filter((value): value is JsonValue => value !== null);
@@ -310,7 +504,7 @@ export function generateAgentManifest(
   )
     throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
   return deepFreeze({
-    manifestVersion: "0.1",
+    manifestVersion: "0.2",
     profile,
     service: { name: service.name, version: service.version },
     irVersion: "0.1",
@@ -318,7 +512,28 @@ export function generateAgentManifest(
     generatedBy: { name: GENERATOR_NAME, version: GENERATOR_VERSION },
     discovery: {
       http: discovery.http,
-      mcp: { endpoint: discovery.mcp.endpoint, target: MCP_TARGET },
+      ...(options.mcpEnabled === true
+        ? {
+            mcp: {
+              endpoint: discovery.mcp.endpoint,
+              profiles: [
+                {
+                  protocolVersion: MCP_LEGACY_PROTOCOL_VERSION,
+                  target: MCP_LEGACY_TARGET,
+                  profileVersion: MCP_PROFILE_VERSION,
+                },
+                {
+                  protocolVersion: MCP_PROTOCOL_VERSION,
+                  target: MCP_TARGET,
+                  profileVersion: MCP_PROFILE_VERSION,
+                },
+              ],
+            },
+          }
+        : {}),
+      ...(remoteCli === undefined
+        ? {}
+        : { cli: { protocolVersion: "0.1" as const, ...remoteCli } }),
     },
     namespaces,
     capabilities,
@@ -367,6 +582,222 @@ function verifyLocator(
     });
 }
 
+const closed = (
+  value: unknown,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): value is Record<string, unknown> =>
+  dataObject(value) &&
+  required.every((key) => Object.hasOwn(value, key)) &&
+  Object.keys(value).every(
+    (key) => required.includes(key) || optional.includes(key),
+  );
+const strings = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+const enumValue = (
+  value: unknown,
+  choices: readonly string[],
+): value is string => typeof value === "string" && choices.includes(value);
+
+function validManifestPayload(
+  payload: unknown,
+): payload is Record<string, unknown> {
+  if (
+    !closed(payload, [
+      "manifestVersion",
+      "profile",
+      "service",
+      "irVersion",
+      "irHash",
+      "generatedBy",
+      "discovery",
+      "namespaces",
+      "capabilities",
+    ]) ||
+    (payload.manifestVersion !== "0.1" && payload.manifestVersion !== "0.2") ||
+    !enumValue(payload.profile, ["private", "public", "live"]) ||
+    payload.irVersion !== "0.1" ||
+    typeof payload.irHash !== "string" ||
+    !SHA256.test(payload.irHash) ||
+    !closed(payload.service, ["name", "version"]) ||
+    typeof payload.service.name !== "string" ||
+    typeof payload.service.version !== "string" ||
+    !closed(payload.generatedBy, ["name", "version"]) ||
+    payload.generatedBy.name !== GENERATOR_NAME ||
+    typeof payload.generatedBy.version !== "string" ||
+    !closed(payload.discovery, ["http"], ["mcp", "cli"]) ||
+    !strings(payload.namespaces) ||
+    !Array.isArray(payload.capabilities)
+  )
+    return false;
+  try {
+    validateDiscoveryContext({
+      http: payload.discovery.http,
+      mcp: {
+        endpoint: dataObject(payload.discovery.mcp)
+          ? payload.discovery.mcp.endpoint
+          : "/mcp",
+      },
+    });
+  } catch {
+    return false;
+  }
+  const mcp = payload.discovery.mcp;
+  const cli = payload.discovery.cli;
+  if (payload.manifestVersion === "0.1") {
+    if (
+      cli !== undefined ||
+      !closed(mcp, ["endpoint", "target"]) ||
+      mcp.target !== "mcp@2026-07-28/streamable-http/tools-unary-v2"
+    )
+      return false;
+  } else if (mcp !== undefined) {
+    if (
+      !closed(mcp, ["endpoint", "profiles"]) ||
+      !Array.isArray(mcp.profiles) ||
+      mcp.profiles.length !== 2
+    )
+      return false;
+    const expected = [
+      [MCP_LEGACY_PROTOCOL_VERSION, MCP_LEGACY_TARGET],
+      [MCP_PROTOCOL_VERSION, MCP_TARGET],
+    ];
+    if (
+      !mcp.profiles.every(
+        (profile, index) =>
+          closed(profile, ["protocolVersion", "target", "profileVersion"]) &&
+          profile.protocolVersion === expected[index]![0] &&
+          profile.target === expected[index]![1] &&
+          profile.profileVersion === MCP_PROFILE_VERSION,
+      )
+    )
+      return false;
+  }
+  if (cli !== undefined) {
+    if (
+      payload.manifestVersion !== "0.2" ||
+      !closed(cli, ["protocolVersion", "endpoints"], ["externalUrl"]) ||
+      cli.protocolVersion !== "0.1"
+    )
+      return false;
+    try {
+      validateRemoteCli({
+        endpoints: cli.endpoints,
+        ...(cli.externalUrl === undefined
+          ? {}
+          : { externalUrl: cli.externalUrl }),
+      });
+    } catch {
+      return false;
+    }
+  }
+  return payload.capabilities.every((capability) => {
+    if (
+      !closed(capability, [
+        "id",
+        "version",
+        "summary",
+        "lifecycle",
+        "exposure",
+        "effects",
+        "interfaces",
+        "describe",
+      ]) ||
+      [capability.id, capability.version, capability.summary].some(
+        (value) => typeof value !== "string",
+      ) ||
+      !dataObject(capability.lifecycle) ||
+      !dataObject(capability.exposure) ||
+      !dataObject(capability.interfaces) ||
+      !dataObject(capability.describe) ||
+      !closed(capability.effects, ["impact", "confirmation", "idempotency"]) ||
+      !enumValue(capability.effects.impact, ["read", "write", "destructive"]) ||
+      !enumValue(capability.effects.confirmation, ["none", "required"]) ||
+      !enumValue(capability.effects.idempotency, ["none", "intrinsic", "key"])
+    )
+      return false;
+    try {
+      lifecycle({
+        id: capability.id,
+        lifecycle: capability.lifecycle,
+      } as unknown as Capability);
+    } catch {
+      return false;
+    }
+    const names = Object.keys(capability.interfaces);
+    if (
+      !names.every((name) => ["http", "cli", "mcp"].includes(name)) ||
+      Object.keys(capability.exposure).sort().join("\0") !==
+        names.sort().join("\0") ||
+      Object.values(capability.exposure).some(
+        (value) => !enumValue(value, ["private", "authenticated", "public"]),
+      )
+    )
+      return false;
+    if (
+      capability.interfaces.http !== undefined &&
+      (!closed(capability.interfaces.http, ["method", "path"]) ||
+        typeof capability.interfaces.http.method !== "string" ||
+        typeof capability.interfaces.http.path !== "string")
+    )
+      return false;
+    const cliEntry = capability.interfaces.cli;
+    if (cliEntry !== undefined) {
+      if (payload.manifestVersion === "0.1") {
+        if (!closed(cliEntry, ["command"]) || !strings(cliEntry.command))
+          return false;
+      } else {
+        if (
+          !closed(cliEntry, [], ["command", "remoteCommand"]) ||
+          (cliEntry.command === undefined &&
+            cliEntry.remoteCommand === undefined) ||
+          (cliEntry.command !== undefined &&
+            (!strings(cliEntry.command) ||
+              cliEntry.command.length < 2 ||
+              cliEntry.command
+                .slice(1)
+                .some((part) => !cliCommandToken.test(part)))) ||
+          (cliEntry.remoteCommand !== undefined &&
+            (!strings(cliEntry.remoteCommand) ||
+              cliEntry.remoteCommand.length === 0 ||
+              cliEntry.remoteCommand.some(
+                (part) => !cliCommandToken.test(part),
+              ))) ||
+          (cli !== undefined) !== (cliEntry.remoteCommand !== undefined) ||
+          (cliEntry.command !== undefined) !==
+            (capability.describe.cli !== undefined)
+        )
+          return false;
+        if (cliEntry.command !== undefined) {
+          try {
+            verifyCliBinary(cliEntry.command[0]);
+          } catch {
+            return false;
+          }
+        }
+      }
+    } else if (
+      payload.manifestVersion === "0.2" &&
+      capability.describe.cli !== undefined
+    )
+      return false;
+    if (
+      capability.interfaces.mcp !== undefined &&
+      (mcp === undefined ||
+        !closed(capability.interfaces.mcp, ["toolName"]) ||
+        typeof capability.interfaces.mcp.toolName !== "string")
+    )
+      return false;
+    return (
+      closed(capability.describe, [], ["http", "cli"]) &&
+      (capability.describe.http === undefined ||
+        typeof capability.describe.http === "string") &&
+      (capability.describe.cli === undefined ||
+        strings(capability.describe.cli))
+    );
+  });
+}
+
 export function assembleAgentManifestRoot(context: {
   readonly payload: Uint8Array;
   readonly build: unknown;
@@ -378,11 +809,7 @@ export function assembleAgentManifestRoot(context: {
   } catch {
     throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
   }
-  if (
-    !dataObject(payload) ||
-    payload.manifestVersion !== "0.1" ||
-    Object.hasOwn(payload, "build")
-  )
+  if (!validManifestPayload(payload))
     throw new ProjectionError("CAP_MANIFEST_GENERATION_FAILED");
   return canonicalBytes({
     ...payload,
@@ -403,6 +830,8 @@ export function createAgentManifestArtifactProducer(
   options: Readonly<{
     discovery?: DiscoveryContext;
     profile?: Exclude<ManifestProfile, "live">;
+    mcpEnabled?: boolean;
+    remoteCli?: ManifestRemoteCli;
   }> = {},
 ) {
   const discoveryAssertion =
@@ -410,12 +839,18 @@ export function createAgentManifestArtifactProducer(
       ? undefined
       : validateDiscoveryContext(options.discovery);
   const profile = options.profile ?? "private";
+  const remoteCli =
+    options.remoteCli === undefined
+      ? undefined
+      : validateRemoteCli(options.remoteCli);
   return deepFreeze({
     id: "capaxle.agent-manifest",
     version: GENERATOR_VERSION,
     staticInputs: {
       profile,
+      mcpEnabled: options.mcpEnabled === true,
       ...(discoveryAssertion === undefined ? {} : { discoveryAssertion }),
+      ...(remoteCli === undefined ? {} : { remoteCli }),
     },
     diagnosticCodes: [
       {
@@ -440,7 +875,7 @@ export function createAgentManifestArtifactProducer(
         id: "capaxle.agent-manifest",
         path: "agent-manifest.json",
         mediaType: "application/json",
-        target: "capaxle:agent-manifest@0.1",
+        target: "capaxle:agent-manifest@0.2",
         dependencies: ["document:capability-ir" as const],
         produce(context: ArtifactContext) {
           try {
@@ -462,6 +897,8 @@ export function createAgentManifestArtifactProducer(
                   irHash: context.buildContext.irHash,
                   discovery,
                   profile,
+                  mcpEnabled: options.mcpEnabled === true,
+                  ...(remoteCli === undefined ? {} : { remoteCli }),
                   ...(context.buildContext.cliBinary === undefined
                     ? {}
                     : { cliBinary: context.buildContext.cliBinary }),
@@ -481,7 +918,7 @@ export function createAgentManifestArtifactProducer(
                   code: failure.code,
                   severity: "error" as const,
                   message: "Agent manifest generation failed.",
-                  target: "capaxle:agent-manifest@0.1",
+                  target: "capaxle:agent-manifest@0.2",
                   details: failure.details,
                 },
               ],

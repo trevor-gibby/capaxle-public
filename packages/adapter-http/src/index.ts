@@ -1,5 +1,9 @@
 import { Buffer } from "node:buffer";
-import { createServer } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { isIP } from "node:net";
 import type {
   AdapterIngress,
@@ -40,6 +44,9 @@ export interface HttpProjectionOptions {
   readonly security?: readonly Readonly<Record<string, readonly string[]>>[];
   readonly profile?: "public" | "internal";
   readonly discovery?: DiscoveryContext;
+  /** Trusted deployment mount; excluded from portable Capability IR. */
+  readonly basePath?: string;
+  readonly externalUrl?: string;
 }
 export interface HttpAdapterOptions extends HttpProjectionOptions {
   readonly ingress: AdapterIngress;
@@ -65,6 +72,7 @@ export interface HttpAdapter {
   readonly openapi: JsonValue;
   readonly discovery: JsonValue;
   readonly discoveryContext: DiscoveryContext;
+  matches(request: Pick<HttpRequest, "method" | "path">): boolean;
   handle(request: HttpRequest): Promise<HttpResponse>;
 }
 export const HTTP_ERROR_STATUS = Object.freeze({
@@ -424,6 +432,40 @@ export function generateOpenApi(options: HttpProjectionOptions): {
   const discoveryContext = validateDiscoveryContext(
     options.discovery ?? DEFAULT_DISCOVERY_CONTEXT,
   );
+  const basePath = options.basePath ?? "/";
+  if (
+    basePath !== "/" &&
+    (!basePath.startsWith("/") ||
+      basePath.startsWith("//") ||
+      basePath.endsWith("/") ||
+      /[?#\\\0%]/.test(basePath) ||
+      basePath
+        .split("/")
+        .slice(1)
+        .some((part) => !part || part === "." || part === ".."))
+  )
+    throw new Error("CAP_APP_MOUNT_INVALID");
+  const mounted = (path: string) =>
+    basePath === "/" ? path : `${basePath}${path}`;
+  let externalOrigin: string | undefined;
+  if (options.externalUrl !== undefined) {
+    let parsed: URL;
+    try {
+      parsed = new URL(options.externalUrl);
+    } catch {
+      throw new Error("CAP_APP_MOUNT_INVALID");
+    }
+    if (
+      parsed.pathname !== basePath ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      !["http:", "https:"].includes(parsed.protocol)
+    )
+      throw new Error("CAP_APP_MOUNT_INVALID");
+    externalOrigin = parsed.origin;
+  }
   const components: ObjectData = Object.assign(Object.create(null), {
     CapabilityError: errorSchema,
   });
@@ -691,9 +733,10 @@ export function generateOpenApi(options: HttpProjectionOptions): {
         ];
       }),
     ) as JsonValue;
-    const path = object(paths[p.path]);
+    const fullPath = mounted(p.path);
+    const path = object(paths[fullPath]);
     path[p.method.toLowerCase()] = operation;
-    paths[p.path] = path;
+    paths[fullPath] = path;
   }
   for (const [path, summary, parameter] of [
     [discoveryContext.http.collection, "List public capabilities", false],
@@ -708,7 +751,8 @@ export function generateOpenApi(options: HttpProjectionOptions): {
       true,
     ],
   ] as const) {
-    const pathItem = object(paths[path]);
+    const fullPath = mounted(path);
+    const pathItem = object(paths[fullPath]);
     if (Object.hasOwn(pathItem, "get"))
       throw new Error("CAP_HTTP_ROUTE_COLLISION");
     pathItem.get = {
@@ -741,16 +785,19 @@ export function generateOpenApi(options: HttpProjectionOptions): {
       },
       security: [],
     };
-    paths[path] = pathItem;
+    paths[fullPath] = pathItem;
   }
   const rawDocument: JsonValue = {
     openapi: "3.1.1",
     "x-capaxle-discovery": {
-      list: discoveryContext.http.collection,
-      describe: discoveryContext.http.detailTemplate,
-      schema: discoveryContext.http.schemaTemplate,
+      list: mounted(discoveryContext.http.collection),
+      describe: mounted(discoveryContext.http.detailTemplate),
+      schema: mounted(discoveryContext.http.schemaTemplate),
     },
     info: { title: "Capaxle capabilities", version: "0.1" },
+    ...(externalOrigin === undefined
+      ? {}
+      : { servers: [{ url: externalOrigin }] }),
     paths,
     components: {
       schemas: components,
@@ -1044,6 +1091,27 @@ export function createHttpAdapter(options: HttpAdapterOptions): HttpAdapter {
     openapi,
     discovery,
     discoveryContext,
+    matches(request) {
+      const pathname = request.path.split("?")[0]!.split("#")[0]!;
+      return (
+        (request.method === "GET" &&
+          ([
+            "/healthz",
+            "/readyz",
+            "/openapi.json",
+            discoveryContext.http.collection,
+          ].includes(pathname) ||
+            matchPath(discoveryContext.http.detailTemplate, pathname) !==
+              null ||
+            matchPath(discoveryContext.http.schemaTemplate, pathname) !==
+              null)) ||
+        capabilities.some(
+          (capability) =>
+            projection(capability).method === request.method &&
+            matchPath(projection(capability).path, pathname) !== null,
+        )
+      );
+    },
     async handle(request) {
       let url: URL;
       let invalidUrl = false;
@@ -1289,20 +1357,31 @@ export function createHttpAdapter(options: HttpAdapterOptions): HttpAdapter {
 export interface HttpHostOptions {
   readonly adapter: HttpAdapter;
   readonly discovery?: DiscoveryContext;
+  readonly basePath?: string;
   readonly port?: number;
   readonly host?: string;
   readonly maxBodyBytes?: number;
   readonly requestTimeoutMs?: number;
+}
+export interface HttpNodeHandlerOptions extends HttpHostOptions {
+  readonly fallthrough?: boolean;
 }
 export interface HttpHost {
   readonly url: string;
   update(adapter: HttpAdapter): void;
   close(): Promise<void>;
 }
-/** Reference Node host; each request captures one immutable adapter generation. */
-export async function startHttpHost(
-  options: HttpHostOptions,
-): Promise<HttpHost> {
+export interface HttpNodeHandler {
+  handle(req: IncomingMessage, res: ServerResponse): Promise<boolean>;
+  update(adapter: HttpAdapter): void;
+  close(): void;
+  abortActive(): void;
+}
+
+/** Reusable Node request handler; unmatched requests remain unread. */
+export function createHttpNodeHandler(
+  options: HttpNodeHandlerOptions,
+): HttpNodeHandler {
   const discoveryAssertion =
     options.discovery === undefined
       ? undefined
@@ -1312,90 +1391,161 @@ export async function startHttpHost(
     !equalDiscovery(options.adapter.discoveryContext, discoveryAssertion)
   )
     throw new Error("CAP_DISCOVERY_CONTEXT_MISMATCH");
+  if (
+    options.fallthrough !== false &&
+    typeof options.adapter.matches !== "function"
+  )
+    throw new Error("CAP_HTTP_HOST_CONFIG_INVALID");
   let adapter = options.adapter;
   let closing = false;
+  const active = new Set<AbortController>();
   const max = options.maxBodyBytes ?? 1048576;
   const timeout = options.requestTimeoutMs ?? 30000;
+  const basePath = options.basePath ?? "/";
   if (
     !Number.isSafeInteger(max) ||
     max < 1 ||
     !Number.isSafeInteger(timeout) ||
-    timeout < 1
+    timeout < 1 ||
+    !basePath.startsWith("/") ||
+    (basePath !== "/" && (basePath.endsWith("/") || basePath.startsWith("//")))
   )
     throw new Error("CAP_HTTP_HOST_CONFIG_INVALID");
-  const server = createServer(async (req, res) => {
-    const current = adapter;
-    const controller = new AbortController();
-    req.on("aborted", () => controller.abort());
-    res.on("close", () => {
-      if (!res.writableEnded) controller.abort();
-    });
-    const deadline = new Date(Date.now() + timeout);
-    const timer = setTimeout(() => {
-      if (!req.complete) controller.abort();
-    }, timeout);
-    timer.unref();
-    try {
-      if (closing) {
-        res.writeHead(503, { "cache-control": "no-store" });
-        res.end(JSON.stringify({ code: "CAP_DEPENDENCY_UNAVAILABLE" }));
-        return;
-      }
-      let size = 0;
-      const chunks: Buffer[] = [];
-      let invalidBody = false;
-      for await (const chunk of req) {
-        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        size += bytes.length;
-        if (size <= max) chunks.push(bytes);
-        else invalidBody = true;
-      }
-      let body: unknown;
-      if (size > 0 && !invalidBody) {
-        try {
-          body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-        } catch {
-          invalidBody = true;
-        }
-      }
-      const headers: Record<string, string | readonly string[]> =
-        Object.create(null);
-      for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        const name = req.rawHeaders[i]!.toLowerCase(),
-          value = req.rawHeaders[i + 1]!;
-        const old = headers[name];
-        headers[name] =
-          old === undefined
-            ? value
-            : typeof old === "string"
-              ? [old, value]
-              : [...old, value];
-      }
-      const response = await current.handle({
-        method: req.method ?? "GET",
-        path: req.url ?? "/",
-        headers,
-        ...(body === undefined ? {} : { body }),
-        invalidBody,
-        signal: controller.signal,
-        deadline,
+  return {
+    async handle(req, res) {
+      const currentPath = req.url ?? "/";
+      const localPath =
+        basePath === "/"
+          ? currentPath
+          : currentPath.startsWith(`${basePath}/`)
+            ? currentPath.slice(basePath.length)
+            : currentPath === basePath
+              ? "/"
+              : "";
+      const current = adapter;
+      if (
+        !localPath ||
+        (options.fallthrough !== false &&
+          !current.matches({ method: req.method ?? "GET", path: localPath }))
+      )
+        return false;
+      const controller = new AbortController();
+      active.add(controller);
+      req.on("aborted", () => controller.abort());
+      res.on("close", () => {
+        if (!res.writableEnded) controller.abort();
       });
-      if (!res.destroyed) {
-        res.writeHead(response.status, {
-          "content-type": "application/json; charset=utf-8",
-          ...response.headers,
+      const deadline = new Date(Date.now() + timeout);
+      const timer = setTimeout(() => {
+        if (!req.complete) controller.abort();
+      }, timeout);
+      timer.unref();
+      try {
+        if (closing) {
+          res.writeHead(503, { "cache-control": "no-store" });
+          res.end(JSON.stringify({ code: "CAP_DEPENDENCY_UNAVAILABLE" }));
+          return true;
+        }
+        let size = 0;
+        const chunks: Buffer[] = [];
+        let invalidBody = false;
+        for await (const chunk of req) {
+          const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          size += bytes.length;
+          if (size <= max) chunks.push(bytes);
+          else invalidBody = true;
+        }
+        let body: unknown;
+        if (size > 0 && !invalidBody) {
+          try {
+            body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          } catch {
+            invalidBody = true;
+          }
+        }
+        const headers: Record<string, string | readonly string[]> =
+          Object.create(null);
+        for (let i = 0; i < req.rawHeaders.length; i += 2) {
+          const name = req.rawHeaders[i]!.toLowerCase(),
+            value = req.rawHeaders[i + 1]!;
+          const old = headers[name];
+          headers[name] =
+            old === undefined
+              ? value
+              : typeof old === "string"
+                ? [old, value]
+                : [...old, value];
+        }
+        const response = await current.handle({
+          method: req.method ?? "GET",
+          path: localPath,
+          headers,
+          ...(body === undefined ? {} : { body }),
+          invalidBody,
+          signal: controller.signal,
+          deadline,
         });
-        res.end(JSON.stringify(response.body));
+        if (!res.destroyed) {
+          res.writeHead(response.status, {
+            "content-type": "application/json; charset=utf-8",
+            ...response.headers,
+          });
+          res.end(JSON.stringify(response.body));
+        }
+      } catch (error) {
+        if (res.headersSent || res.writableEnded || res.destroyed) {
+          if (!res.destroyed && !res.writableEnded) res.destroy();
+          return true;
+        }
+        throw error;
+      } finally {
+        clearTimeout(timer);
+        active.delete(controller);
       }
-    } catch {
-      if (!res.destroyed) {
-        res.writeHead(400, { "cache-control": "no-store" });
+      return true;
+    },
+    update(next) {
+      if (closing) throw new Error("CAP_HTTP_HOST_CLOSED");
+      if (
+        discoveryAssertion !== undefined &&
+        !equalDiscovery(next.discoveryContext, discoveryAssertion)
+      )
+        throw new Error("CAP_DISCOVERY_CONTEXT_MISMATCH");
+      if (options.fallthrough !== false && typeof next.matches !== "function")
+        throw new Error("CAP_HTTP_HOST_CONFIG_INVALID");
+      adapter = next;
+    },
+    close() {
+      closing = true;
+    },
+    abortActive() {
+      for (const controller of active) controller.abort();
+    },
+  };
+}
+
+/** Reference Node host; each request captures one immutable adapter generation. */
+export async function startHttpHost(
+  options: HttpHostOptions,
+): Promise<HttpHost> {
+  const handler = createHttpNodeHandler({ ...options, fallthrough: false });
+  const server = createServer(async (req, res) => {
+    try {
+      const handled = await handler.handle(req, res);
+      if (!handled) {
+        res.writeHead(404, { "cache-control": "no-store" });
         res.end(JSON.stringify({ code: "CAP_INPUT_INVALID" }));
       }
-    } finally {
-      clearTimeout(timer);
+    } catch {
+      if (res.headersSent || res.writableEnded || res.destroyed) {
+        if (!res.destroyed && !res.writableEnded) res.destroy();
+        return;
+      }
+      res.writeHead(500, { "cache-control": "no-store" });
+      res.end(JSON.stringify({ code: "CAP_INTERNAL" }));
     }
   });
+  const timeout = options.requestTimeoutMs ?? 30000;
   server.requestTimeout = timeout;
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -1409,17 +1559,9 @@ export async function startHttpHost(
     throw new Error("CAP_HTTP_HOST_CONFIG_INVALID");
   return {
     url: `http://${isIP(options.host ?? "127.0.0.1") === 6 ? `[${options.host}]` : (options.host ?? "127.0.0.1")}:${address.port}`,
-    update(next) {
-      if (closing) throw new Error("CAP_HTTP_HOST_CLOSED");
-      if (
-        discoveryAssertion !== undefined &&
-        !equalDiscovery(next.discoveryContext, discoveryAssertion)
-      )
-        throw new Error("CAP_DISCOVERY_CONTEXT_MISMATCH");
-      adapter = next;
-    },
+    update: handler.update,
     async close() {
-      closing = true;
+      handler.close();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeIdleConnections();

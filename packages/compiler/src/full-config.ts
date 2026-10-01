@@ -81,6 +81,7 @@ export interface ResolvedCompilerConfig {
   readonly httpHeaderAllowlist: readonly string[];
   readonly discovery: DiscoveryContext;
   readonly cliBinary?: string;
+  readonly cliRemoteOnly?: true;
   readonly projections: Readonly<Record<string, ProjectionOverrides>>;
   readonly outputDirectory: string;
   readonly outputExplicit: boolean;
@@ -1150,6 +1151,7 @@ export async function loadFullCompilerConfig(
   let httpPrefix = "/api";
   let httpHeaderAllowlist: string[] = [];
   let cliBinary: string | undefined;
+  let cliRemoteOnly = false;
   const httpDiscovery = { ...defaultDiscoveryContext.http };
   const authoredHttpDiscovery = new Set<string>();
   let mcpEndpoint = defaultDiscoveryContext.mcp.endpoint;
@@ -1301,23 +1303,50 @@ export async function loadFullCompilerConfig(
         else {
           unsupported(
             cli,
-            new Set(["binaryName"]),
+            new Set(["binaryName", "remoteOnly"]),
             "/adapters/cli",
             diagnostics,
             issue,
           );
-          if (
-            typeof cli.binaryName !== "string" ||
-            !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cli.binaryName)
-          )
+          if ("binaryName" in cli && "remoteOnly" in cli)
             diagnostics.push(
               issue(
                 "CAP_CONFIG_FIELD_UNSUPPORTED",
-                "adapters.cli.binaryName must be a valid single token.",
-                "/adapters/cli/binaryName",
+                "adapters.cli must select either binaryName or remoteOnly, not both.",
+                "/adapters/cli",
               ),
             );
-          else cliBinary = cli.binaryName;
+          else if ("binaryName" in cli) {
+            if (
+              typeof cli.binaryName !== "string" ||
+              !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(cli.binaryName)
+            )
+              diagnostics.push(
+                issue(
+                  "CAP_CONFIG_FIELD_UNSUPPORTED",
+                  "adapters.cli.binaryName must be a valid single token.",
+                  "/adapters/cli/binaryName",
+                ),
+              );
+            else cliBinary = cli.binaryName;
+          } else if ("remoteOnly" in cli) {
+            if (cli.remoteOnly !== true)
+              diagnostics.push(
+                issue(
+                  "CAP_CONFIG_FIELD_UNSUPPORTED",
+                  "adapters.cli.remoteOnly must be true.",
+                  "/adapters/cli/remoteOnly",
+                ),
+              );
+            else cliRemoteOnly = true;
+          } else
+            diagnostics.push(
+              issue(
+                "CAP_CONFIG_FIELD_UNSUPPORTED",
+                "adapters.cli requires binaryName or remoteOnly: true.",
+                "/adapters/cli",
+              ),
+            );
         }
       }
       if ("mcp" in adapters) {
@@ -1535,6 +1564,7 @@ export async function loadFullCompilerConfig(
         mcp: Object.freeze({ endpoint: mcpEndpoint }),
       }),
       ...(cliBinary ? { cliBinary } : {}),
+      ...(cliRemoteOnly ? { cliRemoteOnly: true as const } : {}),
       projections: Object.freeze(projections),
       outputDirectory,
       outputExplicit,

@@ -133,6 +133,38 @@ export type AdapterInvocationCandidate =
       readonly code: "CAP_MCP_CLIENT_METADATA_REQUIRED";
       readonly status: "failed_precondition";
       readonly safeDetails?: JsonValue;
+    }
+  | {
+      readonly ok: false;
+      readonly code: "CAP_CLI_PROTOCOL_UNSUPPORTED";
+      readonly status: "failed_precondition";
+      readonly safeDetails?: {
+        readonly supportedProfiles: readonly ["0.1"];
+      };
+    }
+  | {
+      readonly ok: false;
+      readonly code: "CAP_CLI_IR_MISMATCH" | "CAP_CLI_CONTRACT_MISMATCH";
+      readonly status: "failed_precondition";
+      readonly safeDetails?: {
+        readonly expectedHash: string;
+        readonly currentHash: string;
+      };
+    }
+  | {
+      readonly ok: false;
+      readonly code: "CAP_CLI_SERVICE_MISMATCH" | "CAP_CLI_TLS_REQUIRED";
+      readonly status: "failed_precondition";
+    }
+  | {
+      readonly ok: false;
+      readonly code: "CAP_CLI_PAYLOAD_TOO_LARGE";
+      readonly status: "invalid_argument";
+    }
+  | {
+      readonly ok: false;
+      readonly code: "CAP_INTERNAL";
+      readonly status: "internal";
     };
 export type InvocationResult =
   | {
@@ -167,6 +199,8 @@ export interface RuntimeTelemetryEvent {
 }
 export interface RuntimeKernelOptions {
   readonly registry: RuntimeRegistry;
+  /** Process-local values copied into each handler context for this kernel. */
+  readonly services?: Readonly<Record<string, unknown>>;
   readonly bearerDescriptors?: readonly unknown[];
   readonly confirmationProvider?: ConfirmationProvider;
   readonly idempotencyProvider?: IdempotencyProvider;
@@ -382,6 +416,22 @@ export interface AuthenticationProvider {
     credentials: unknown,
     view: OperationView,
   ) => unknown | Promise<unknown>;
+  /** Capability-neutral verification for discovery and transport ownership. */
+  readonly authenticateDisclosure?: (
+    credentials: unknown,
+    view: AdapterDisclosureAuthenticationView,
+  ) => unknown | Promise<unknown>;
+}
+export interface AdapterDisclosureAuthenticationView extends Omit<
+  OperationView,
+  "capability" | "sourceChain"
+> {
+  readonly purpose: "disclosure";
+  readonly adapter: Readonly<{
+    readonly id: string;
+    readonly source: InvocationRequest["source"];
+  }>;
+  readonly sourceChain: readonly [];
 }
 export type AuthorizationProvider = (
   view: OperationView,
@@ -398,6 +448,21 @@ declare const principalTokenBrand: unique symbol;
 export interface PrincipalTrustToken {
   readonly [principalTokenBrand]: true;
 }
+declare const requesterOwnershipBrand: unique symbol;
+/** Process-local transport ownership; never invocation authority. */
+export interface RequesterOwnershipToken {
+  readonly [requesterOwnershipBrand]: true;
+}
+export interface AdapterDisclosureRequest {
+  readonly credentials?: unknown;
+  readonly deadline?: Date;
+  readonly signal?: AbortSignal;
+}
+export interface AdapterDisclosureResult {
+  readonly visibility: "public" | "authenticated" | "private";
+  readonly principal?: PrincipalSnapshot;
+  readonly requester: RequesterOwnershipToken;
+}
 export interface AdapterInvocationRequest extends Omit<
   InvocationRequest,
   "source" | "principal"
@@ -407,6 +472,13 @@ export interface AdapterInvocationRequest extends Omit<
 }
 export interface AdapterIngress {
   invoke(request: AdapterInvocationRequest): Promise<InvocationResult>;
+  disclose(
+    request?: AdapterDisclosureRequest,
+  ): Promise<AdapterDisclosureResult>;
+  sameRequester(
+    left: RequesterOwnershipToken,
+    right: RequesterOwnershipToken,
+  ): boolean;
   authenticate(
     capability: string,
     credentials: unknown,

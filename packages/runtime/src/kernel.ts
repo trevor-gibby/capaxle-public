@@ -62,6 +62,10 @@ import type {
   InternalInvocationTransitionView,
   IdentityFingerprintSet,
   PrincipalTrustToken,
+  AdapterDisclosureAuthenticationView,
+  AdapterDisclosureRequest,
+  AdapterDisclosureResult,
+  RequesterOwnershipToken,
 } from "./types.js";
 
 const adapterControlKeys = [
@@ -78,6 +82,34 @@ const adapterCandidateKeys = [
   "status",
   "safeDetails",
 ] as const;
+const cliAdapterRejections = {
+  CAP_CLI_PROTOCOL_UNSUPPORTED: {
+    status: "failed_precondition",
+    message: "CLI protocol is unsupported.",
+  },
+  CAP_CLI_IR_MISMATCH: {
+    status: "failed_precondition",
+    message: "Capability metadata is stale.",
+  },
+  CAP_CLI_CONTRACT_MISMATCH: {
+    status: "failed_precondition",
+    message: "CLI transport contract is stale.",
+  },
+  CAP_CLI_SERVICE_MISMATCH: {
+    status: "failed_precondition",
+    message: "CLI service identity does not match.",
+  },
+  CAP_CLI_TLS_REQUIRED: {
+    status: "failed_precondition",
+    message: "TLS is required.",
+  },
+  CAP_CLI_PAYLOAD_TOO_LARGE: {
+    status: "invalid_argument",
+    message: "CLI request payload is too large.",
+  },
+} as const;
+type CliAdapterRejectionCode = keyof typeof cliAdapterRejections;
+const CLI_HASH = /^sha256:[0-9a-f]{64}$/u;
 const ADAPTER_DETAIL_MAX_DEPTH = 8;
 const ADAPTER_DETAIL_MAX_NODES = 128;
 const ADAPTER_DETAIL_MAX_STRING = 1024;
@@ -140,6 +172,43 @@ function boundedAdapterDetails(value: unknown): JsonValue {
   if (JSON.stringify(result).length > ADAPTER_DETAIL_MAX_JSON)
     throw new Error("adapter_details");
   return result;
+}
+
+function boundedCliAdapterDetails(
+  code: CliAdapterRejectionCode,
+  value: unknown,
+): JsonValue {
+  const details = boundedAdapterDetails(value);
+  if (details === null || typeof details !== "object" || Array.isArray(details))
+    throw new Error("cli_adapter_details");
+  const fields = details as Readonly<Record<string, JsonValue>>;
+  const keys = Object.keys(fields);
+  if (code === "CAP_CLI_PROTOCOL_UNSUPPORTED") {
+    const profiles = fields.supportedProfiles;
+    if (
+      keys.length !== 1 ||
+      keys[0] !== "supportedProfiles" ||
+      !Array.isArray(profiles) ||
+      profiles.length !== 1 ||
+      profiles[0] !== "0.1"
+    )
+      throw new Error("cli_adapter_details");
+  } else if (
+    code === "CAP_CLI_IR_MISMATCH" ||
+    code === "CAP_CLI_CONTRACT_MISMATCH"
+  ) {
+    if (
+      keys.length !== 2 ||
+      !keys.includes("expectedHash") ||
+      !keys.includes("currentHash") ||
+      typeof fields.expectedHash !== "string" ||
+      typeof fields.currentHash !== "string" ||
+      !CLI_HASH.test(fields.expectedHash) ||
+      !CLI_HASH.test(fields.currentHash)
+    )
+      throw new Error("cli_adapter_details");
+  } else throw new Error("cli_adapter_details");
+  return details;
 }
 
 /** Normative stages; adapter serialization follows the returned canonical result. */
@@ -965,6 +1034,7 @@ export function createRuntimeKernel(
   try {
     carrier = ownData(options, [
       "registry",
+      "services",
       "onStage",
       "telemetry",
       "authenticationProviders",
@@ -997,6 +1067,16 @@ export function createRuntimeKernel(
     throw new RuntimeConfigurationError("CAP_RUNTIME_CONFIGURATION_INVALID");
   const onStage = carrier.onStage as RuntimeKernelOptions["onStage"];
   const telemetry = carrier.telemetry as RuntimeKernelOptions["telemetry"];
+  let services: Readonly<Record<string, unknown>>;
+  try {
+    services = Object.freeze(
+      carrier.services === undefined
+        ? Object.create(null)
+        : ownData(carrier.services),
+    ) as Readonly<Record<string, unknown>>;
+  } catch {
+    throw new RuntimeConfigurationError("CAP_RUNTIME_CONFIGURATION_INVALID");
+  }
   const onTrace = carrier.onTrace as RuntimeKernelOptions["onTrace"];
   const onMetric = carrier.onMetric as RuntimeKernelOptions["onMetric"];
   const onLog = carrier.onLog as RuntimeKernelOptions["onLog"];
@@ -1172,7 +1252,13 @@ export function createRuntimeKernel(
   };
   const providers = new Map<
     string,
-    (credentials: unknown, view: OperationView) => unknown
+    {
+      authenticate: (credentials: unknown, view: OperationView) => unknown;
+      authenticateDisclosure?: (
+        credentials: unknown,
+        view: AdapterDisclosureAuthenticationView,
+      ) => unknown;
+    }
   >();
   const principalIssuerIds = new Set<string>();
   const adapters = new Map<string, AdapterRegistration>();
@@ -1182,6 +1268,13 @@ export function createRuntimeKernel(
       adapter: AdapterRegistration;
       capability: string;
       identity: IdentityContext;
+    }
+  >();
+  const requesters = new WeakMap<
+    object,
+    {
+      readonly adapter: AdapterRegistration;
+      readonly identity: JsonValue;
     }
   >();
   const authorizationProvider =
@@ -1257,20 +1350,34 @@ export function createRuntimeKernel(
       return output;
     };
     for (const provider of list(carrier.authenticationProviders)) {
-      const data = ownData(provider, ["id", "authenticate"]);
+      const data = ownData(provider, [
+        "id",
+        "authenticate",
+        "authenticateDisclosure",
+      ]);
       if (
         !canonicalIdentityId(data.id) ||
         typeof data.authenticate !== "function" ||
+        (data.authenticateDisclosure !== undefined &&
+          (typeof data.authenticateDisclosure !== "function" ||
+            types.isProxy(data.authenticateDisclosure))) ||
         principalIssuerIds.has(data.id)
       )
         throw new Error("provider");
-      providers.set(
-        data.id,
-        data.authenticate as (
+      providers.set(data.id, {
+        authenticate: data.authenticate as (
           credentials: unknown,
           view: OperationView,
         ) => unknown,
-      );
+        ...(data.authenticateDisclosure === undefined
+          ? {}
+          : {
+              authenticateDisclosure: data.authenticateDisclosure as (
+                credentials: unknown,
+                view: AdapterDisclosureAuthenticationView,
+              ) => unknown,
+            }),
+      });
       principalIssuerIds.add(data.id);
     }
     if (carrier.identityFingerprintProvider !== undefined) {
@@ -1415,7 +1522,6 @@ export function createRuntimeKernel(
           data.source as string,
         ) ||
         !Array.isArray(ids) ||
-        !ids.length ||
         ids.some((id) => typeof id !== "string" || !registry.entries.has(id)) ||
         (data.privateBoundary !== undefined &&
           typeof data.privateBoundary !== "boolean")
@@ -1525,9 +1631,16 @@ export function createRuntimeKernel(
       | {
           readonly ok: false;
           readonly code:
-            "CAP_INPUT_INVALID" | "CAP_MCP_CLIENT_METADATA_REQUIRED";
+            | "CAP_INPUT_INVALID"
+            | "CAP_MCP_CLIENT_METADATA_REQUIRED"
+            | CliAdapterRejectionCode;
           readonly status: "invalid_argument" | "failed_precondition";
           readonly safeDetails?: JsonValue;
+        }
+      | {
+          readonly ok: false;
+          readonly code: "CAP_INTERNAL";
+          readonly status: "internal";
         }
       | undefined;
     let adapterTimeoutMs: number | undefined;
@@ -1660,17 +1773,58 @@ export function createRuntimeKernel(
           const metadataRequired =
             candidate.code === "CAP_MCP_CLIENT_METADATA_REQUIRED" &&
             candidate.status === "failed_precondition";
-          if (!inputInvalid && !metadataRequired)
+          const cliCode =
+            typeof candidate.code === "string" &&
+            Object.hasOwn(cliAdapterRejections, candidate.code)
+              ? (candidate.code as CliAdapterRejectionCode)
+              : undefined;
+          const cliRejection =
+            cliCode === undefined ? undefined : cliAdapterRejections[cliCode];
+          const cliFailure =
+            source === "cli" &&
+            cliRejection !== undefined &&
+            candidate.status === cliRejection.status;
+          const internalFailure =
+            candidate.code === "CAP_INTERNAL" &&
+            candidate.status === "internal";
+          if (
+            !inputInvalid &&
+            !metadataRequired &&
+            !cliFailure &&
+            !internalFailure
+          )
             throw new Error("adapter_rejection");
-          adapterCandidate = Object.freeze({
-            ok: false,
-            code: candidate.code as
-              "CAP_INPUT_INVALID" | "CAP_MCP_CLIENT_METADATA_REQUIRED",
-            status: inputInvalid ? "invalid_argument" : "failed_precondition",
-            ...(Object.hasOwn(candidate, "safeDetails")
-              ? { safeDetails: boundedAdapterDetails(candidate.safeDetails) }
-              : {}),
-          });
+          if (internalFailure) {
+            if (Object.keys(candidate).length !== 3)
+              throw new Error("adapter_rejection");
+            adapterCandidate = Object.freeze({
+              ok: false,
+              code: "CAP_INTERNAL",
+              status: "internal",
+            });
+          } else {
+            adapterCandidate = Object.freeze({
+              ok: false,
+              code: candidate.code as
+                | "CAP_INPUT_INVALID"
+                | "CAP_MCP_CLIENT_METADATA_REQUIRED"
+                | CliAdapterRejectionCode,
+              status:
+                inputInvalid || cliCode === "CAP_CLI_PAYLOAD_TOO_LARGE"
+                  ? "invalid_argument"
+                  : "failed_precondition",
+              ...(Object.hasOwn(candidate, "safeDetails")
+                ? {
+                    safeDetails: cliFailure
+                      ? boundedCliAdapterDetails(
+                          cliCode!,
+                          candidate.safeDetails,
+                        )
+                      : boundedAdapterDetails(candidate.safeDetails),
+                  }
+                : {}),
+            });
+          }
         } else throw new Error("adapter_candidate");
       } catch {
         return failure("CAP_INTERNAL_INVOCATION_INVALID", "internal");
@@ -2319,7 +2473,9 @@ export function createRuntimeKernel(
             return denial("CAP_UNAUTHENTICATED", "unauthenticated");
           identity = held.identity;
         } else if (ingress?.hasCredentials) {
-          const authenticate = providers.get(ingress.adapter.providerId)!;
+          const authenticate = providers.get(
+            ingress.adapter.providerId,
+          )!.authenticate;
           const outcome = await awaitProvider(() =>
             authenticate(ingress.credentials, operationView()),
           );
@@ -2513,15 +2669,35 @@ export function createRuntimeKernel(
         stage("parse");
         let input = root.input;
         if (adapterCandidate !== undefined) {
-          if (!adapterCandidate.ok)
+          if (
+            !adapterCandidate.ok &&
+            adapterCandidate.code === "CAP_INTERNAL"
+          ) {
+            diagnostic("CAP_INTERNAL");
+            return failure("CAP_INTERNAL", "internal", {
+              executionState: "not_started",
+            });
+          }
+          if (!adapterCandidate.ok) {
+            const safeDetails =
+              adapterCandidate.safeDetails === undefined ||
+              adapterCandidate.code === "CAP_INPUT_INVALID" ||
+              adapterCandidate.code === "CAP_MCP_CLIENT_METADATA_REQUIRED"
+                ? adapterCandidate.safeDetails
+                : redactSecrets(
+                    bearerGuard.redactValue(adapterCandidate.safeDetails),
+                  );
             return failure(
               adapterCandidate.code,
               adapterCandidate.status,
-              adapterCandidate.safeDetails,
+              safeDetails,
               adapterCandidate.code === "CAP_INPUT_INVALID"
                 ? "Invocation input is invalid."
-                : "Required client metadata is unavailable.",
+                : adapterCandidate.code === "CAP_MCP_CLIENT_METADATA_REQUIRED"
+                  ? "Required client metadata is unavailable."
+                  : cliAdapterRejections[adapterCandidate.code].message,
             );
+          }
           if (Object.hasOwn(root, "input"))
             return failure("CAP_INTERNAL_INVOCATION_INVALID", "internal");
           input = adapterCandidate.input;
@@ -3188,7 +3364,7 @@ export function createRuntimeKernel(
         };
         freezeFacade(facade);
         const context = Object.freeze({
-          services: Object.freeze({}),
+          services,
           secrets: Object.freeze({
             get: (name: string): string | undefined =>
               typeof name === "string" ? secrets.get(name) : undefined,
@@ -3579,8 +3755,269 @@ export function createRuntimeKernel(
         { adapter, credentials, hasCredentials },
       );
     };
+    const authenticateIdentity = async (
+      capabilityId: string | undefined,
+      credentials: unknown,
+      authenticationOptions?: {
+        readonly deadline?: Date;
+        readonly signal?: AbortSignal;
+      },
+      disclosureHasCredentials = true,
+    ): Promise<{
+      readonly identity: IdentityContext;
+      readonly refresh: () => void;
+      readonly dispose: () => void;
+    }> => {
+      if (identityUnavailable)
+        throw new RuntimeConfigurationError("CAP_RUNTIME_IDENTITY_UNAVAILABLE");
+      const entry =
+        capabilityId === undefined
+          ? undefined
+          : registry.entries.get(capabilityId);
+      if (
+        capabilityId !== undefined &&
+        (!entry || !adapter.capabilities.includes(capabilityId))
+      )
+        throw new RuntimeConfigurationError("CAP_UNAUTHENTICATED");
+      let controls: Record<string, unknown>;
+      let deadlineMs = Date.now() + 30000;
+      try {
+        controls =
+          authenticationOptions === undefined
+            ? (Object.create(null) as Record<string, unknown>)
+            : ownData(authenticationOptions, ["deadline", "signal"]);
+        if (controls.signal !== undefined && !validSignal(controls.signal))
+          throw new Error("signal");
+        if (controls.deadline !== undefined) {
+          if (
+            typeof controls.deadline !== "object" ||
+            controls.deadline === null ||
+            types.isProxy(controls.deadline)
+          )
+            throw new Error("deadline");
+          const requested = getDateTime.call(controls.deadline);
+          if (!Number.isFinite(requested)) throw new Error("deadline");
+          deadlineMs = Math.min(deadlineMs, requested);
+        }
+      } catch {
+        throw new RuntimeConfigurationError("CAP_INTERNAL_INVOCATION_INVALID");
+      }
+      const signal = controls.signal as AbortSignal | undefined;
+      const follower = new AbortController();
+      const correlationId = allocateCorrelation();
+      const view: OperationView | AdapterDisclosureAuthenticationView =
+        Object.freeze({
+          ...(entry
+            ? {
+                capability: Object.freeze({
+                  id: entry.capability.id,
+                  version: entry.capability.version,
+                  access: entry.capability.access,
+                }),
+              }
+            : {
+                purpose: "disclosure" as const,
+                adapter: Object.freeze({
+                  id: adapter.id,
+                  source: adapter.source,
+                }),
+              }),
+          identity: rootIdentity(anonymousPrincipal),
+          sourceChain: entry
+            ? Object.freeze([
+                Object.freeze({
+                  source: adapter.source,
+                  capability: entry.capability.id,
+                  exactVersion: entry.capability.version,
+                }),
+              ])
+            : Object.freeze([] as const),
+          correlationId,
+          traceId: correlationId,
+          spanId: correlationId,
+          deadlineMs,
+          signal: follower.signal,
+        }) as OperationView | AdapterDisclosureAuthenticationView;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let rejectInterrupt: ((value: "cancel" | "deadline") => void) | undefined;
+      const cancel = (): void => {
+        try {
+          follower.abort();
+        } catch {
+          /* Isolated native signal mutation is contained. */
+        }
+        rejectInterrupt?.("cancel");
+      };
+      let establishedEvents: ReadonlyMap<PropertyKey, object> | undefined;
+      const dispose = (): void => {
+        clearTimeout(timer);
+        try {
+          if (signal && validSignal(signal, establishedEvents))
+            removeListener.call(signal, "abort", cancel);
+        } catch {
+          /* Malformed caller event state is contained. */
+        }
+      };
+      const refresh = (): void => {
+        if (
+          signal &&
+          (!validSignal(signal, establishedEvents) ||
+            abortedGetter?.call(signal))
+        ) {
+          cancel();
+          throw new RuntimeConfigurationError("CAP_CANCELLED");
+        }
+        if (deadlineMs <= Date.now()) {
+          try {
+            follower.abort();
+          } catch {
+            /* isolated */
+          }
+          rejectInterrupt?.("deadline");
+          throw new RuntimeConfigurationError("CAP_DEADLINE_EXCEEDED");
+        }
+      };
+      let retained = false;
+      try {
+        const interruption = new Promise<"cancel" | "deadline">((resolve) => {
+          rejectInterrupt = resolve;
+          timer = setTimeout(
+            () => {
+              try {
+                follower.abort();
+              } catch {
+                /* isolated */
+              }
+              resolve("deadline");
+            },
+            Math.max(0, deadlineMs - Date.now()),
+          );
+        });
+        try {
+          if (signal) {
+            addListener.call(signal, "abort", cancel, { once: true });
+            establishedEvents = establishedSignalEvents(signal);
+          }
+        } catch {
+          throw new RuntimeConfigurationError(
+            "CAP_INTERNAL_INVOCATION_INVALID",
+          );
+        }
+        refresh();
+        const pending = providerValue(() => {
+          refresh();
+          const { authenticate, authenticateDisclosure } = providers.get(
+            adapter.providerId,
+          )!;
+          if (capabilityId !== undefined)
+            return authenticate(credentials, view as OperationView);
+          if (!authenticateDisclosure) {
+            if (disclosureHasCredentials)
+              throw new Error("disclosure_provider_missing");
+            return null;
+          }
+          return authenticateDisclosure(
+            credentials,
+            view as AdapterDisclosureAuthenticationView,
+          );
+        });
+        const outcome = await Promise.race([pending, interruption]);
+        refresh();
+        if (outcome === "cancel")
+          throw new RuntimeConfigurationError("CAP_CANCELLED");
+        if (outcome === "deadline")
+          throw new RuntimeConfigurationError("CAP_DEADLINE_EXCEEDED");
+        if ("failed" in outcome)
+          throw new RuntimeConfigurationError("CAP_DEPENDENCY_UNAVAILABLE");
+        let identity: IdentityContext;
+        if (outcome.value === null) {
+          if (capabilityId !== undefined || disclosureHasCredentials)
+            throw new RuntimeConfigurationError("CAP_UNAUTHENTICATED");
+          identity = rootIdentity(anonymousPrincipal);
+        } else {
+          try {
+            identity = rootIdentity(
+              normalizePrincipal(outcome.value, adapter.providerId),
+            );
+          } catch {
+            throw new RuntimeConfigurationError("CAP_DEPENDENCY_UNAVAILABLE");
+          }
+        }
+        refresh();
+        retained = true;
+        return Object.freeze({ identity, refresh, dispose });
+      } finally {
+        // Successful verification retains interruption ownership until token issuance.
+        if (!retained) dispose();
+      }
+    };
     return Object.freeze({
       invoke: invokeIngress,
+      disclose: async (
+        request?: AdapterDisclosureRequest,
+      ): Promise<AdapterDisclosureResult> => {
+        let data: Record<string, unknown>;
+        try {
+          data =
+            request === undefined
+              ? (Object.create(null) as Record<string, unknown>)
+              : ownData(request, ["credentials", "deadline", "signal"]);
+        } catch {
+          throw new RuntimeConfigurationError(
+            "CAP_INTERNAL_INVOCATION_INVALID",
+          );
+        }
+        const credentials = data.credentials;
+        const hasCredentials = Object.hasOwn(data, "credentials");
+        delete data.credentials;
+        const verification = await authenticateIdentity(
+          undefined,
+          credentials,
+          data,
+          hasCredentials,
+        );
+        try {
+          verification.refresh();
+          const identity = verification.identity;
+          const requester = Object.freeze({}) as RequesterOwnershipToken;
+          const requesterIdentity = copyJson(identity);
+          const result = Object.freeze({
+            visibility:
+              adapter.privateBoundary === true
+                ? ("private" as const)
+                : identity.effective.type === "anonymous"
+                  ? ("public" as const)
+                  : ("authenticated" as const),
+            ...(identity.effective.type === "anonymous"
+              ? {}
+              : { principal: identity.effective }),
+            requester,
+          });
+          verification.refresh();
+          requesters.set(requester, { adapter, identity: requesterIdentity });
+          return result;
+        } finally {
+          verification.dispose();
+        }
+      },
+      sameRequester: (
+        left: RequesterOwnershipToken,
+        right: RequesterOwnershipToken,
+      ): boolean => {
+        const held = (token: unknown) =>
+          typeof token === "object" && token !== null && !types.isProxy(token)
+            ? requesters.get(token)
+            : undefined;
+        const leftState = held(left);
+        const rightState = held(right);
+        return (
+          leftState !== undefined &&
+          rightState !== undefined &&
+          leftState.adapter === adapter &&
+          rightState.adapter === adapter &&
+          equalJson(leftState.identity, rightState.identity)
+        );
+      },
       authenticate: async (
         capabilityId: string,
         credentials: unknown,
@@ -3589,152 +4026,29 @@ export function createRuntimeKernel(
           readonly signal?: AbortSignal;
         },
       ): Promise<PrincipalTrustToken> => {
-        if (identityUnavailable)
-          throw new RuntimeConfigurationError(
-            "CAP_RUNTIME_IDENTITY_UNAVAILABLE",
-          );
-        const entry = registry.entries.get(capabilityId);
-        if (!entry || !adapter.capabilities.includes(capabilityId))
-          throw new RuntimeConfigurationError("CAP_UNAUTHENTICATED");
-        let controls: Record<string, unknown>;
-        let deadlineMs = Date.now() + 30000;
-        try {
-          controls =
-            authenticationOptions === undefined
-              ? (Object.create(null) as Record<string, unknown>)
-              : ownData(authenticationOptions, ["deadline", "signal"]);
-          if (controls.signal !== undefined && !validSignal(controls.signal))
-            throw new Error("signal");
-          if (controls.deadline !== undefined) {
-            if (
-              typeof controls.deadline !== "object" ||
-              controls.deadline === null ||
-              types.isProxy(controls.deadline)
-            )
-              throw new Error("deadline");
-            const requested = getDateTime.call(controls.deadline);
-            if (!Number.isFinite(requested)) throw new Error("deadline");
-            deadlineMs = Math.min(deadlineMs, requested);
-          }
-        } catch {
-          throw new RuntimeConfigurationError(
-            "CAP_INTERNAL_INVOCATION_INVALID",
-          );
-        }
-        const signal = controls.signal as AbortSignal | undefined;
-        const follower = new AbortController();
-        const correlationId = allocateCorrelation();
-        const view = Object.freeze({
-          capability: Object.freeze({
-            id: entry.capability.id,
-            version: entry.capability.version,
-            access: entry.capability.access,
-          }),
-          identity: rootIdentity(anonymousPrincipal),
-          sourceChain: Object.freeze([
-            Object.freeze({
-              source: adapter.source,
-              capability: capabilityId,
-              exactVersion: entry.capability.version,
-            }),
-          ]),
-          correlationId,
-          traceId: correlationId,
-          spanId: correlationId,
-          deadlineMs,
-          signal: follower.signal,
-        });
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        let rejectInterrupt:
-          ((value: "cancel" | "deadline") => void) | undefined;
-        const cancel = (): void => {
-          try {
-            follower.abort();
-          } catch {
-            /* Isolated native signal mutation is contained. */
-          }
-          rejectInterrupt?.("cancel");
-        };
-        let establishedEvents: ReadonlyMap<PropertyKey, object> | undefined;
-        let outcome:
-          { value: unknown } | { failed: true } | "cancel" | "deadline";
-        try {
-          const interruption = new Promise<"cancel" | "deadline">((resolve) => {
-            rejectInterrupt = resolve;
-            timer = setTimeout(
-              () => {
-                try {
-                  follower.abort();
-                } catch {
-                  /* isolated */
-                }
-                resolve("deadline");
-              },
-              Math.max(0, deadlineMs - Date.now()),
-            );
-          });
-          try {
-            if (signal) {
-              addListener.call(signal, "abort", cancel, { once: true });
-              establishedEvents = establishedSignalEvents(signal);
-            }
-          } catch {
-            throw new RuntimeConfigurationError(
-              "CAP_INTERNAL_INVOCATION_INVALID",
-            );
-          }
-          if (
-            signal &&
-            (!validSignal(signal, establishedEvents) ||
-              abortedGetter?.call(signal))
-          )
-            cancel();
-          if (deadlineMs <= Date.now()) rejectInterrupt?.("deadline");
-          const pending = providerValue(() => {
-            if (
-              (signal &&
-                (!validSignal(signal, establishedEvents) ||
-                  abortedGetter?.call(signal))) ||
-              deadlineMs <= Date.now()
-            )
-              throw new Error("interrupted");
-            return providers.get(adapter.providerId)!(credentials, view);
-          });
-          outcome = await Promise.race([pending, interruption]);
-        } finally {
-          clearTimeout(timer);
-          try {
-            if (signal && validSignal(signal, establishedEvents))
-              removeListener.call(signal, "abort", cancel);
-          } catch {
-            /* Malformed caller event state is contained. */
-          }
-        }
         if (
-          signal &&
-          (!validSignal(signal, establishedEvents) ||
-            abortedGetter?.call(signal))
+          typeof capabilityId !== "string" ||
+          !registry.entries.has(capabilityId) ||
+          !adapter.capabilities.includes(capabilityId)
         )
-          throw new RuntimeConfigurationError("CAP_CANCELLED");
-        if (outcome === "cancel")
-          throw new RuntimeConfigurationError("CAP_CANCELLED");
-        if (outcome === "deadline" || deadlineMs <= Date.now())
-          throw new RuntimeConfigurationError("CAP_DEADLINE_EXCEEDED");
-        if ("failed" in outcome)
-          throw new RuntimeConfigurationError("CAP_DEPENDENCY_UNAVAILABLE");
-        if (outcome.value === null)
           throw new RuntimeConfigurationError("CAP_UNAUTHENTICATED");
-        let identity: IdentityContext;
+        const verification = await authenticateIdentity(
+          capabilityId,
+          credentials,
+          authenticationOptions,
+        );
         try {
-          identity = rootIdentity(
-            normalizePrincipal(outcome.value, adapter.providerId),
-          );
-        } catch {
-          throw new RuntimeConfigurationError("CAP_DEPENDENCY_UNAVAILABLE");
+          const token = Object.freeze({}) as PrincipalTrustToken;
+          verification.refresh();
+          tokens.set(token, {
+            adapter,
+            capability: capabilityId,
+            identity: verification.identity,
+          });
+          return token;
+        } finally {
+          verification.dispose();
         }
-        const token = Object.freeze({}) as PrincipalTrustToken;
-        tokens.set(token, { adapter, capability: capabilityId, identity });
-        return token;
       },
     });
   };

@@ -2295,7 +2295,8 @@ function validateProducers(
               item.id === publication.payloadArtifactId &&
               item.path === "agent-manifest.json" &&
               item.mediaType === "application/json" &&
-              item.target === "capaxle:agent-manifest@0.1",
+              (item.target === "capaxle:agent-manifest@0.1" ||
+                item.target === "capaxle:agent-manifest@0.2"),
           ),
         );
         if (!structurallyValid || rootPublicationRegistered) {
@@ -3888,25 +3889,37 @@ async function compileGeneration(
     schemas: schemaBatch?.schemas ?? Object.freeze({}),
   });
   collisionDiagnostics(resolved, diagnostics);
-  if (
-    resolved.some(
-      (item) =>
-        (item.ir.interfaces as Record<string, Record<string, JsonValue>>).cli
-          ?.enabled === true,
-    ) &&
-    !config.cliBinary
-  )
-    diagnostics.push(
-      diagnostic(
-        "CAP_BUILD_CONTEXT_INVALID",
-        "configuration",
-        "config-value",
-        "adapters.cli.binaryName is required when a CLI projection is enabled.",
-        configSource(config, "/adapters/cli/binaryName"),
-        "/adapters/cli/binaryName",
-        { reason: "missing" },
-      ),
-    );
+  const cliProjectionEnabled = resolved.some(
+    (item) =>
+      (item.ir.interfaces as Record<string, Record<string, JsonValue>>).cli
+        ?.enabled === true,
+  );
+  if (cliProjectionEnabled && !config.cliBinary) {
+    if (config.cliRemoteOnly && options.requireLocalCliBinary)
+      diagnostics.push(
+        diagnostic(
+          "CAP_CLI_REMOTE_APP_CONTEXT_REQUIRED",
+          "configuration",
+          "config-value",
+          "A remote-only CLI requires an application deployment context. Use buildDeployment with an enabled CLI registration instead of standalone capaxle build.",
+          configSource(config, "/adapters/cli/remoteOnly"),
+          "/adapters/cli/remoteOnly",
+          { reason: "application-context-required" },
+        ),
+      );
+    else if (!config.cliRemoteOnly)
+      diagnostics.push(
+        diagnostic(
+          "CAP_BUILD_CONTEXT_INVALID",
+          "configuration",
+          "config-value",
+          "adapters.cli.binaryName is required when a CLI projection is enabled.",
+          configSource(config, "/adapters/cli/binaryName"),
+          "/adapters/cli/binaryName",
+          { reason: "missing" },
+        ),
+      );
+  }
   const sources = [...projectSources.values()]
     .map((item) => ({ path: item.path, sha256: item.sourceHash }))
     .sort((a, b) => compareText(a.path, b.path));
@@ -5644,6 +5657,7 @@ async function compileGeneration(
     document: deepFreeze(document),
     irHash,
     discovery: config.discovery,
+    ...(config.cliRemoteOnly ? { cliRemoteOnly: true } : {}),
     registry,
     validators,
     runtimeBindings,

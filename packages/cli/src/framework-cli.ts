@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { diagnoseLocalProject } from "./doctor.js";
 import {
   createOpenCliArtifactProducer,
   OPENCLI_SELECTOR,
@@ -55,7 +56,7 @@ import {
 } from "@capaxle/runtime";
 
 export type FrameworkCommand =
-  "check" | "build" | "list" | "describe" | "invoke" | "dev";
+  "check" | "build" | "list" | "describe" | "invoke" | "dev" | "doctor";
 export type CommandDiagnosticCode =
   | "CAP_CLI_USAGE"
   | "CAP_CLI_COMMAND_UNKNOWN"
@@ -119,6 +120,8 @@ export interface ParsedFrameworkCommand {
   readonly input?: string;
   readonly host?: string;
   readonly port?: number;
+  readonly deployment?: string;
+  readonly deadlineMs?: number;
 }
 
 export type ParseResult =
@@ -386,6 +389,7 @@ const commands = new Set<FrameworkCommand>([
   "describe",
   "invoke",
   "dev",
+  "doctor",
 ]);
 const idPattern = /^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)*$/;
 const optionNames = new Set([
@@ -397,6 +401,8 @@ const optionNames = new Set([
   "--input",
   "--host",
   "--port",
+  "--deployment",
+  "--deadline-ms",
 ]);
 
 function commandDiagnostic(
@@ -520,6 +526,8 @@ export function parseFrameworkArguments(argv: readonly string[]): ParseResult {
   let input: string | undefined;
   let host: string | undefined;
   let port: number | undefined;
+  let deployment: string | undefined;
+  let deadlineMs: number | undefined;
   let strict = false;
   let json = command === "invoke";
   let id: string | undefined;
@@ -542,6 +550,9 @@ export function parseFrameworkArguments(argv: readonly string[]): ParseResult {
         (token === "--output" && command !== "build") ||
         (token === "--format" && command !== "build") ||
         (token === "--input" && command !== "invoke") ||
+        ((token === "--deployment" || token === "--deadline-ms") &&
+          command !== "doctor") ||
+        (token === "--strict" && command === "doctor") ||
         ((token === "--port" || token === "--host") && command !== "dev")
       ) {
         diagnostics.push(
@@ -589,6 +600,17 @@ export function parseFrameworkArguments(argv: readonly string[]): ParseResult {
               index,
             ),
           );
+      } else if (token === "--deployment") deployment = value;
+      else if (token === "--deadline-ms") {
+        if (!/^\d+$/.test(value) || Number(value) < 1 || Number(value) > 300000)
+          diagnostics.push(
+            parseIssue(
+              { reason: "invalid-option-value", option: token },
+              "The deadline must be an integer from 1 through 300000 milliseconds.",
+              index,
+            ),
+          );
+        else deadlineMs = Number(value);
       } else if (token === "--input") input = value;
       else if (token === "--host") {
         host = value;
@@ -678,6 +700,8 @@ export function parseFrameworkArguments(argv: readonly string[]): ParseResult {
       ...(input === undefined ? {} : { input }),
       ...(host === undefined ? {} : { host }),
       ...(port === undefined ? {} : { port }),
+      ...(deployment === undefined ? {} : { deployment }),
+      ...(deadlineMs === undefined ? {} : { deadlineMs }),
       ...(id === undefined ? {} : { id, idArgumentIndex: idArgumentIndex! }),
     }),
   });
@@ -902,6 +926,36 @@ export async function executeFrameworkCli(
   let accumulatedCompilationDiagnostics: readonly CompilationDiagnostic[] = [];
   try {
     const projectRoot = resolve(dependencies.cwd(), options.project ?? ".");
+    if (options.command === "doctor") {
+      const result = await diagnoseLocalProject({
+        projectRoot,
+        ...(options.deployment === undefined
+          ? {}
+          : { deployment: resolve(projectRoot, options.deployment) }),
+        ...(options.deadlineMs === undefined
+          ? {}
+          : { deadlineMs: options.deadlineMs }),
+      });
+      const envelope = {
+        ok: result.exitCode === 0,
+        command: "doctor",
+        value: result.report as unknown as JsonValue,
+        diagnostics: [],
+      };
+      const stdout = result.report.checks
+        .map(
+          (check) =>
+            `${check.status.toUpperCase()} ${check.id}${check.code ? ` [${check.code}]` : ""} ${check.location ?? "-"}: ${check.message}${check.remediation ? `\n  Action: ${check.remediation}` : ""}\n`,
+        )
+        .join("");
+      return {
+        exitCode: result.exitCode,
+        json: options.json,
+        envelope,
+        stdout,
+        diagnostics: [],
+      };
+    }
     if (options.command === "dev") {
       return await runFrameworkDev(options, projectRoot, dependencies, io);
     }
@@ -923,6 +977,7 @@ export async function executeFrameworkCli(
       projectRoot,
       schemaProviders: dependencies.schemaProviders,
       ...(artifactProducers === undefined ? {} : { artifactProducers }),
+      ...(options.command === "build" ? { requireLocalCliBinary: true } : {}),
     });
     accumulatedCompilationDiagnostics = sortCompilationDiagnostics(
       compilation.diagnostics,
@@ -1171,7 +1226,10 @@ export function renderFrameworkResult(result: FrameworkCliResult): {
     });
   }
   return Object.freeze({
-    stdout: result.exitCode === 0 ? result.stdout : "",
+    stdout:
+      result.exitCode === 0 || result.envelope.command === "doctor"
+        ? result.stdout
+        : "",
     stderr: result.diagnostics.map(humanDiagnostic).join(""),
   });
 }

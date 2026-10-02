@@ -277,13 +277,39 @@ const styles = `.documentation-layout{display:grid;grid-template-columns:minmax(
 // Fixed code only: authored content stays in escaped text nodes / textarea values.
 const copyScript = `document.querySelectorAll('button[data-copy]').forEach(function(button){button.addEventListener('click',async function(){var field=document.getElementById(button.dataset.copy);var status=document.getElementById('copy-status');try{if(!navigator.clipboard)throw new Error('Clipboard unavailable');await navigator.clipboard.writeText(field.value);status.textContent='Copied to clipboard.';}catch{field.focus();field.select();status.textContent='Select and copy the highlighted snippet.';}});});`;
 
+/** Conservative inline-only CSS: no HTML escapes, CSS escapes or resource loaders. */
+export function validateDocumentationStylesheet(
+  stylesheet: unknown,
+): asserts stylesheet is string {
+  if (
+    typeof stylesheet !== "string" ||
+    !stylesheet.trim() ||
+    /[<>\\\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(stylesheet)
+  )
+    return invalid("Invalid inline documentation stylesheet.");
+  // Remove comments before checking tokens: comments may split unsafe identifiers.
+  const tokens = stylesheet.replace(/\/\*[\s\S]*?\*\//g, "");
+  if (
+    /@\s*(?:import|charset|namespace)\b/i.test(tokens) ||
+    /(?:url|src|image|image-set|-webkit-image-set|expression|attr)\s*\(/i.test(
+      tokens,
+    ) ||
+    /(?:-moz-binding|behavior)\s*:/i.test(tokens) ||
+    /(?:https?:|data:|javascript:)/i.test(tokens)
+  )
+    invalid("Unsupported inline documentation stylesheet resource.");
+}
+
 export function renderDocumentationPage(options: {
   readonly bundle: DocumentationBundle;
   readonly pageId: string;
   readonly connection: DocumentationConnection;
   readonly model: DocumentationModel;
+  readonly stylesheet?: string;
 }): { html: string } {
   const { bundle, pageId, connection, model } = options;
+  if (options.stylesheet !== undefined)
+    validateDocumentationStylesheet(options.stylesheet);
   readBundle(bundle);
   const docsPath = connectionPath(connection.docsPath);
   if (
@@ -371,7 +397,7 @@ export function renderDocumentationPage(options: {
           .join("");
         return `<section><h2>${escape(surface.label)}</h2>${surface.url === undefined ? "" : `<p>Location: <a href="${escape(surface.url)}">${escape(surface.url)}</a></p>`}${surface.protocols === undefined ? "" : `<p>Protocols: ${escape(surface.protocols.join(", "))}</p>`}${surface.guidance === undefined ? "" : `<p>${escape(surface.guidance)}</p>`}${snippets}</section>`;
       })
-      .join("")}<p id="copy-status" role="status" aria-live="polite"></p>`;
+      .join("")}`;
   } else {
     const reference = renderReference(
       model,
@@ -389,8 +415,19 @@ export function renderDocumentationPage(options: {
     title = reference.title;
     content = reference.content;
   }
+  // Both page kinds use the same fixed copy handler. Only renderer-owned
+  // controls with matching readonly textareas activate it; authored text is
+  // HTML-escaped and cannot introduce a control or executable snippet.
+  const copyTargets = [
+    ...content.matchAll(/<button type="button" data-copy="([^"]+)"/g),
+  ];
+  const copyEnabled =
+    copyTargets.length > 0 &&
+    copyTargets.every(([, id]) => content.includes(`id="${id}" readonly`));
+  if (copyEnabled)
+    content += '<p id="copy-status" role="status" aria-live="polite"></p>';
   const sidebar = referenceNavigation(model, pageId, link);
   return {
-    html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title><style>${styles}</style></head><body><a class="skip" href="#content">Skip to content</a><header><nav aria-label="Documentation">${link(connection.serviceId, "")}${link("Connection", "connection")}</nav></header><div class="documentation-layout">${sidebar}<main id="content" tabindex="-1">${content}</main></div><footer>Capaxle capability documentation</footer>${pageId === "connection" ? `<script>${copyScript}</script>` : ""}</body></html>`,
+    html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title><style>${options.stylesheet ?? styles}</style></head><body><a class="skip" href="#content">Skip to content</a><header class="docs-header"><nav aria-label="Documentation">${link(connection.serviceId, "")}${link("Connection", "connection")}</nav></header><div class="documentation-layout docs-layout">${sidebar}<main class="docs-main" id="content" tabindex="-1">${content}</main></div><footer>Capaxle capability documentation</footer>${copyEnabled ? `<script>${copyScript}</script>` : ""}</body></html>`,
   };
 }

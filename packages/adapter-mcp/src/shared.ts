@@ -19,7 +19,7 @@ export const MCP_TOOL_META = "com.capaxle/tool" as const;
 export const LEGACY_MCP_INVOCATION_META =
   "io.github.trevor-gibby.capabuild/invocation" as const;
 export const GENERATOR_NAME = "@capaxle/adapter-mcp" as const;
-export const GENERATOR_VERSION = "0.1.0-alpha.2.mcp-profile.0.3" as const;
+export const GENERATOR_VERSION = "0.1.0-alpha.3.mcp-profile.0.3" as const;
 
 const IR_HASH = /^sha256:[0-9a-f]{64}$/;
 const CLI_BINARY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;

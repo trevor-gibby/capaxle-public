@@ -1,6 +1,6 @@
 {
   "name": "@capaxle/cli",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "type": "module",
   "engines": {
     "node": "^22.15.0 || ^24.0.0"
@@ -20,16 +20,16 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@capaxle/adapter-cli": "0.1.0-alpha.2",
-    "@capaxle/ir": "0.1.0-alpha.2",
-    "@capaxle/schema-zod": "0.1.0-alpha.2",
-    "@capaxle/compiler": "0.1.0-alpha.2",
-    "@capaxle/generator-sdk-ts": "0.1.0-alpha.2",
-    "@capaxle/generator-docs": "0.1.0-alpha.2",
-    "@capaxle/runtime": "0.1.0-alpha.2",
-    "@capaxle/adapter-http": "0.1.0-alpha.2",
-    "@capaxle/adapter-mcp": "0.1.0-alpha.2",
-    "@capaxle/app": "0.1.0-alpha.2"
+    "@capaxle/adapter-cli": "0.1.0-alpha.3",
+    "@capaxle/ir": "0.1.0-alpha.3",
+    "@capaxle/schema-zod": "0.1.0-alpha.3",
+    "@capaxle/compiler": "0.1.0-alpha.3",
+    "@capaxle/generator-sdk-ts": "0.1.0-alpha.3",
+    "@capaxle/generator-docs": "0.1.0-alpha.3",
+    "@capaxle/runtime": "0.1.0-alpha.3",
+    "@capaxle/adapter-http": "0.1.0-alpha.3",
+    "@capaxle/adapter-mcp": "0.1.0-alpha.3",
+    "@capaxle/app": "0.1.0-alpha.3"
   },
   "license": "Apache-2.0",
   "repository": {

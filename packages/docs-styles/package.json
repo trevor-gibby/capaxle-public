@@ -1,0 +1,22 @@
+{
+  "name": "@capaxle/docs-styles",
+  "version": "0.1.0-alpha.3",
+  "exports": {
+    "./docs.css": "./docs.css"
+  },
+  "files": [
+    "docs.css",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trevor-gibby/capaxle-public.git",
+    "directory": "packages/docs-styles"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

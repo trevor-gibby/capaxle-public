@@ -12,7 +12,7 @@ import {
   type JsonValue,
 } from "@capaxle/ir";
 
-export const DOCS_SCHEMA_GENERATOR_VERSION = "0.1.0-alpha.2";
+export const DOCS_SCHEMA_GENERATOR_VERSION = "0.1.0-alpha.3";
 export const DOCS_SCHEMA_TARGET = "capaxle:docs-schema-bundle@0.1";
 export const DOCS_SCHEMA_DIAGNOSTIC_CODES = [
   "CAP_BUILD_CONTEXT_INVALID",

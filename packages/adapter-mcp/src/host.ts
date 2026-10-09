@@ -25,7 +25,7 @@ interface LegacyNodeTransport extends LegacyTransport {
     parsedBody?: unknown,
   ): Promise<void>;
 }
-// SDK 1.30.1 exposes a declaration incompatible with exact optional types.
+// The legacy SDK exposes a declaration incompatible with exact optional types.
 // Isolate that upstream declaration at this typed public-API boundary.
 const { StreamableHTTPServerTransport } = createRequire(import.meta.url)(
   "@modelcontextprotocol/sdk/server/streamableHttp.js",

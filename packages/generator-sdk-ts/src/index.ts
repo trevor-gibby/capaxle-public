@@ -2,7 +2,7 @@ import type { JsonSchema, JsonValue } from "@capaxle/ir";
 
 export const INTERNAL_FACADE_PRODUCER_ID =
   "capaxle.internal-facade-ts" as const;
-export const INTERNAL_FACADE_PRODUCER_VERSION = "0.1.0-alpha.2" as const;
+export const INTERNAL_FACADE_PRODUCER_VERSION = "0.1.0-alpha.3" as const;
 export const INTERNAL_FACADE_ARTIFACT_ID =
   "capaxle.internal-facade-ts" as const;
 export const INTERNAL_FACADE_ARTIFACT_PATH = "internal-facade.d.ts" as const;
@@ -1803,7 +1803,7 @@ export function generateInternalFacade(options: {
 // the pure schema-to-TypeScript emitter above; no internal invocation code enters
 // the generated client.
 export const SDK_HTTP_PRODUCER_ID = "capaxle.sdk-http-ts" as const;
-export const SDK_HTTP_PRODUCER_VERSION = "0.1.0-alpha.2" as const;
+export const SDK_HTTP_PRODUCER_VERSION = "0.1.0-alpha.3" as const;
 export const SDK_HTTP_ARTIFACT_ID = "capaxle.sdk-http-ts" as const;
 export const SDK_HTTP_ARTIFACT_PATH = "capaxle-sdk.ts" as const;
 export const SDK_HTTP_MEDIA_TYPE = "text/typescript" as const;

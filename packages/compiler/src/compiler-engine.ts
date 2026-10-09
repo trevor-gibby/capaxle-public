@@ -74,7 +74,7 @@ import type {
   Sha256,
 } from "./compilation-types.js";
 
-export const COMPILER_VERSION = "0.1.0-alpha.2";
+export const COMPILER_VERSION = "0.1.0-alpha.3";
 // Package-private framework construction path, never an application import.
 const { getBindingHandle } = createRequire(import.meta.url)(
   fileURLToPath(

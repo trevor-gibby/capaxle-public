@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   appendFileSync,
   lstatSync,
@@ -21,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertExactKeys,
   distTag,
-  packageNames,
+  packageNamesForVersion,
   publicationOrder,
   registry,
   sha256,
@@ -93,6 +94,14 @@ export function validateArchiveInventory(files, name) {
   for (const required of ["LICENSE", "README.md", "package.json"])
     if (!paths.includes(required))
       throw new Error(`${packageName(name)}: missing ${required}`);
+  if (name === "docs-styles") {
+    assert.deepEqual(
+      [...paths].sort(),
+      ["LICENSE", "README.md", "docs.css", "package.json"],
+      "CSS-only tarball inventory changed",
+    );
+    return;
+  }
   if (!paths.some((path) => path.startsWith("dist/")))
     throw new Error(`${packageName(name)}: missing built output`);
   for (const path of paths)
@@ -103,6 +112,73 @@ export function validateArchiveInventory(files, name) {
       path.includes("..")
     )
       throw new Error(`${packageName(name)}: unexpected tarball path ${path}`);
+}
+
+function declaredBinaryPaths(manifest) {
+  if (manifest.bin === undefined) return [];
+  if (
+    !manifest.bin ||
+    typeof manifest.bin !== "object" ||
+    Array.isArray(manifest.bin)
+  )
+    throw new Error("CAP_RELEASE_BIN_PATH_INVALID");
+  return Object.values(manifest.bin).map((target) => {
+    if (
+      typeof target !== "string" ||
+      !/^\.\/dist\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_-]+\.(?:[cm]?js)$/.test(
+        target,
+      )
+    )
+      throw new Error("CAP_RELEASE_BIN_PATH_INVALID");
+    return target.slice(2);
+  });
+}
+
+export function normalizePackageBins(packageDirectory, manifest) {
+  const targets = declaredBinaryPaths(manifest);
+  if (targets.length === 0) return;
+  const root = resolve(packageDirectory);
+  const rootStat = lstatSync(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory())
+    throw new Error("CAP_RELEASE_BIN_PATH_INVALID");
+  // Validate the complete inventory before changing any generated file mode.
+  const binaries = targets.map((target) => {
+    let path = root;
+    const parts = target.split("/");
+    for (const [index, part] of parts.entries()) {
+      path = resolve(path, part);
+      const stat = lstatSync(path);
+      if (
+        stat.isSymbolicLink() ||
+        (index === parts.length - 1 ? !stat.isFile() : !stat.isDirectory())
+      )
+        throw new Error("CAP_RELEASE_BIN_PATH_INVALID");
+    }
+    if (!readFileSync(path, "utf8").startsWith("#!/usr/bin/env node\n"))
+      throw new Error("CAP_RELEASE_BIN_SHEBANG_INVALID");
+    return path;
+  });
+  for (const binary of binaries) chmodSync(binary, 0o755);
+}
+
+export function validatePackedBins(archive, manifest, { execute = run } = {}) {
+  for (const path of declaredBinaryPaths(manifest)) {
+    const inventory = execute("tar", ["-tvzf", archive, `package/${path}`])
+      .trim()
+      .split("\n");
+    if (
+      inventory.length !== 1 ||
+      !inventory[0].startsWith("-rwxr-xr-x ") ||
+      !inventory[0].endsWith(` package/${path}`)
+    )
+      throw new Error("CAP_RELEASE_BIN_MODE_INVALID");
+    if (
+      !tarFile(archive, path)
+        .toString("utf8")
+        .startsWith("#!/usr/bin/env node\n")
+    )
+      throw new Error("CAP_RELEASE_BIN_SHEBANG_INVALID");
+  }
 }
 
 function inspectArchive(name, version, repository, archive, expectedDigest) {
@@ -125,6 +201,7 @@ function inspectArchive(name, version, repository, archive, expectedDigest) {
     .filter((path) => path.startsWith("package/") && !path.endsWith("/"))
     .map((path) => ({ path: path.slice("package/".length) }));
   validateArchiveInventory(files, name);
+  validatePackedBins(archive, sourceManifest);
   assert.deepEqual(
     tarFile(archive, "LICENSE"),
     readFileSync(resolve(root, "LICENSE")),
@@ -141,21 +218,23 @@ function inspectArchive(name, version, repository, archive, expectedDigest) {
   return digest;
 }
 
-async function cleanInstall(version) {
+export async function cleanInstall(version) {
   const directory = mkdtempSync(resolve(tmpdir(), "capaxle-public-release-"));
   try {
     writeFileSync(
       resolve(directory, "package.json"),
       JSON.stringify({ private: true, type: "module" }),
     );
-    const archives = packageNames.map((name) => archivePath(name, version));
+    const archives = packageNamesForVersion(version).map((name) =>
+      archivePath(name, version),
+    );
     run(
       "npm",
       ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...archives],
       directory,
     );
     const lock = readJson(resolve(directory, "package-lock.json"));
-    for (const name of packageNames) {
+    for (const name of packageNamesForVersion(version)) {
       const entry = lock.packages[`node_modules/${packageName(name)}`];
       if (
         entry?.version !== version ||
@@ -166,15 +245,11 @@ async function cleanInstall(version) {
           `${packageName(name)}: clean install did not use approved tarball`,
         );
     }
-    run(
-      "node",
-      [
-        "--input-type=module",
-        "-e",
-        `await Promise.all(${JSON.stringify(packageNames.map(packageName))}.map((name) => import(name)));`,
-      ],
-      directory,
-    );
+    checkConsumerExports(directory, packageNamesForVersion(version));
+    if (packageNamesForVersion(version).includes("cli"))
+      checkInstalledCli(directory);
+    if (packageNamesForVersion(version).includes("create"))
+      await checkApplicationJourney(directory, version, { packed: true });
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -182,7 +257,7 @@ async function cleanInstall(version) {
 
 export async function cleanRegistryInstall(
   version,
-  names = packageNames,
+  names = packageNamesForVersion(version),
   { execute = run } = {},
 ) {
   const directory = mkdtempSync(resolve(tmpdir(), "capaxle-registry-release-"));
@@ -213,18 +288,151 @@ export async function cleanRegistryInstall(
         throw new Error(`${packageName(name)}: registry install drifted`);
     }
     execute("npm", ["audit", "signatures", "--registry", registry], directory);
-    execute(
-      "node",
-      [
-        "--input-type=module",
-        "-e",
-        `await Promise.all(${JSON.stringify(names.map(packageName))}.map((name) => import(name)));`,
-      ],
-      directory,
-    );
+    checkConsumerExports(directory, names, { execute });
     if (names.includes("cli")) checkInstalledCli(directory, { execute });
+    if (names.includes("create"))
+      await checkApplicationJourney(directory, version, { execute });
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+export function consumerExportProgram(names) {
+  return `import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+for (const name of ${JSON.stringify(names)}) {
+  const manifest = JSON.parse(readFileSync("node_modules/@capaxle/" + name + "/package.json", "utf8"));
+  for (const [entry, target] of Object.entries(manifest.exports ?? {})) {
+    const specifier = "@capaxle/" + name + (entry === "." ? "" : entry.slice(1));
+    if (typeof target === "string" && target.endsWith(".css")) {
+      const asset = new URL(import.meta.resolve(specifier));
+      assert.ok(asset.pathname.startsWith(process.cwd() + "/node_modules/"));
+      assert.ok(readFileSync(asset, "utf8").includes(".documentation-layout"));
+    } else if (typeof target === "string" && target.endsWith(".json")) {
+      JSON.parse(readFileSync(new URL(import.meta.resolve(specifier)), "utf8"));
+    } else await import(specifier);
+  }
+  for (const binary of Object.values(manifest.bin ?? {})) {
+    assert.ok(readFileSync("node_modules/@capaxle/" + name + "/" + binary, "utf8").startsWith("#!/usr/bin/env node"));
+  }
+}`;
+}
+
+export function checkConsumerExports(directory, names, { execute = run } = {}) {
+  execute(
+    "node",
+    ["--input-type=module", "-e", consumerExportProgram(names)],
+    directory,
+  );
+}
+
+export async function checkApplicationJourney(
+  directory,
+  version,
+  { execute = run, packed = false } = {},
+) {
+  const destination = resolve(directory, "release-application");
+  if (existsSync(destination))
+    throw new Error("CAP_RELEASE_SCAFFOLD_NOT_ISOLATED");
+  // npm exec is the npx execution path; an exact packed archive is used before publication.
+  execute(
+    "npm",
+    [
+      "exec",
+      "--yes",
+      ...(packed ? ["--offline"] : []),
+      "--package",
+      packed ? archivePath("create", version) : `@capaxle/create@${version}`,
+      "--",
+      "create-capaxle",
+      "release-application",
+      "--no-input",
+    ],
+    directory,
+  );
+  const manifestBytes = readFileSync(resolve(destination, "package.json"));
+  const manifest = JSON.parse(manifestBytes);
+  for (const [name, pin] of Object.entries({
+    ...manifest.dependencies,
+    ...manifest.devDependencies,
+  }))
+    if (name.startsWith("@capaxle/") && pin !== version)
+      throw new Error("CAP_RELEASE_SCAFFOLD_PIN_CHANGED");
+  execute(
+    "npm",
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--save-exact",
+      ...packageNamesForVersion(version).map((name) =>
+        packed ? archivePath(name, version) : `${packageName(name)}@${version}`,
+      ),
+    ],
+    destination,
+  );
+  writeFileSync(resolve(destination, "package.json"), manifestBytes);
+  const lock = readJson(resolve(destination, "package-lock.json"));
+  lock.packages[""].dependencies = manifest.dependencies;
+  lock.packages[""].devDependencies = manifest.devDependencies;
+  writeFileSync(
+    resolve(destination, "package-lock.json"),
+    `${JSON.stringify(lock, null, 2)}\n`,
+  );
+  for (const name of packageNamesForVersion(version)) {
+    const entry = lock.packages[`node_modules/${packageName(name)}`];
+    const integrity = `sha512-${createHash("sha512")
+      .update(readFileSync(archivePath(name, version)))
+      .digest("base64")}`;
+    if (
+      entry?.version !== version ||
+      entry.integrity !== integrity ||
+      entry.link ||
+      !entry.resolved?.startsWith(packed ? "file:" : `${registry}@capaxle/`)
+    )
+      throw new Error("CAP_RELEASE_SCAFFOLD_INSTALL_CHANGED");
+  }
+  // Dependencies must live inside the authoritative project boundary.
+  const project = realpathSync(destination);
+  const program = `import assert from "node:assert/strict";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
+import { createApplication } from "@capaxle/app";
+import { providers, notes, serviceId, surfaces as generatedSurfaces } from "./config.mjs";
+const app = await createApplication({ mode: "development", projectRoot: ${JSON.stringify(project)}, serviceId, providers: providers(), services: { notes }, surfaces: { http: { enabled: true, providerId: "example.auth" }, cli: { enabled: true, providerId: "example.auth" }, docs: { enabled: true, providerId: "example.auth" } } }).catch(async error => {
+  const { compileProject } = await import("@capaxle/compiler");
+  const { zodSchemaProvider } = await import("@capaxle/schema-zod");
+  const proof = await compileProject({ projectRoot: ${JSON.stringify(project)}, schemaProviders: [zodSchemaProvider] });
+  console.error(JSON.stringify(proof.diagnostics)); throw error;
+});
+const probe = async app => { try {
+  const listener = await app.listen({ host: "127.0.0.1", port: 0 });
+  assert.ok(app.readiness().ready);
+  const discovery = await fetch(listener.url + "/.well-known/capabilities"); assert.equal(discovery.status, 200);
+  const docs = await fetch(listener.url + "/docs/connection"); assert.equal(docs.status, 200); assert.equal(docs.headers.get("cache-control"), "no-store");
+  const client = ${JSON.stringify(resolve(project, "node_modules/@capaxle/client/dist/bin.js"))};
+  const invoke = async args => JSON.parse((await promisify(execFile)(process.execPath, [client, "--url", listener.url, "--allow-http-loopback", "--", ...args, "--json", "--no-input"], { cwd: ${JSON.stringify(project)} })).stdout);
+  assert.equal((await invoke(["capabilities", "list"])).ok, true);
+  const value = await invoke(["notes", "get", "--note-id", "example"]);
+  assert.equal(value.ok, true); assert.equal(value.value.text, "Hello Capaxle");
+  const written = await invoke(["notes", "set", "--note-id", "release-smoke", "--text", "release-write"]);
+  assert.equal(written.ok, true);
+  const readBack = await invoke(["notes", "get", "--note-id", "release-smoke"]);
+  assert.equal(readBack.ok, true); assert.equal(readBack.value.text, "release-write");
+} finally { await app.close(); } };
+await probe(app);
+await promisify(execFile)(process.execPath, ["scripts/build.mjs"], { cwd: ${JSON.stringify(project)} });
+const production = await createApplication({ mode: "production", deployment: { manifest: ${JSON.stringify(resolve(project, "deployment/capaxle.deployment.json"))} }, serviceId, providers: providers(), services: { notes }, surfaces: generatedSurfaces });
+await probe(production);
+`;
+  const path = resolve(project, "release-journey.mjs");
+  try {
+    writeFileSync(path, program);
+    execute("node", [path], project);
+  } finally {
+    rmSync(path, { force: true });
+    rmSync(destination, { recursive: true, force: true });
   }
 }
 
@@ -318,9 +526,10 @@ async function pack() {
   const version = readLocalVersion();
   mkdirSync(archiveDirectory, { recursive: true });
   const digests = {};
-  for (const name of publicationOrder()) {
+  for (const name of publicationOrder(version)) {
     const manifest = readJson(resolve(root, "packages", name, "package.json"));
     validatePackageManifest(manifest, name, version, repository);
+    normalizePackageBins(resolve(root, "packages", name), manifest);
     const [packed] = JSON.parse(
       run("npm", [
         "pack",
@@ -443,7 +652,7 @@ export function validateRecoveryRecord(record, candidate, candidateDigest) {
     );
   assert.deepEqual(
     record.publishedPrefix,
-    publicationOrder()
+    publicationOrder(candidate.version)
       .slice(0, 10)
       .map((name) => ({
         name: packageName(name),
@@ -459,7 +668,7 @@ export function validateRecoveryRecord(record, candidate, candidateDigest) {
 }
 
 export function validateRecoveryInventory(packuments, candidate, record) {
-  const order = publicationOrder();
+  const order = publicationOrder(candidate.version);
   const expectedPrefix = record.publishedPrefix.map(({ name }) => name);
   assert.deepEqual(
     expectedPrefix,
@@ -499,6 +708,7 @@ function attestationUrl(name, version) {
 }
 
 function versionExists(packument, version) {
+  if (packument === null) return false;
   const versions = packument?.versions;
   if (!versions || typeof versions !== "object" || Array.isArray(versions))
     throw new Error(
@@ -693,8 +903,16 @@ function assertReadableResponse(response, name, phase) {
   throw error;
 }
 
-function uploadArchive(name, version) {
-  const result = spawnSync(
+export function executeArchiveUpload(
+  name,
+  version,
+  { execute, env = process.env } = {},
+) {
+  if (typeof execute !== "function")
+    throw new Error(
+      "CAP_RELEASE_UPLOAD_UNAUTHORIZED: injected executor required",
+    );
+  const result = execute(
     "npm",
     [
       "publish",
@@ -704,18 +922,25 @@ function uploadArchive(name, version) {
       "--access",
       "public",
       "--provenance",
+      // CLI configuration overrides inherited environment and npmrc retry settings.
+      "--fetch-retries=0",
       "--registry",
       registry,
     ],
-    { cwd: root, env: process.env, stdio: "inherit" },
+    { cwd: root, env, stdio: "inherit" },
   );
   if (result.status !== 0)
     throw new Error(`${packageName(name)}: publish failed; stop partial train`);
 }
 
+// Only the validated protected CLI entry supplies the production executor.
+function uploadArchive(name, version) {
+  return executeArchiveUpload(name, version, { execute: spawnSync });
+}
+
 async function inventoryAfterFailure(candidate, readPackument) {
   const packages = {};
-  for (const name of packageNames) {
+  for (const name of packageNamesForVersion(candidate.version)) {
     const fullName = packageName(name);
     try {
       const packument = await readPackument(name);
@@ -761,17 +986,21 @@ export async function publishTrain(
     );
   try {
     assertCheckout();
+    if (plan.packages.some((entry) => entry.latest === null))
+      throw new Error(
+        "CAP_RELEASE_NEW_NAME_POLICY_UNRESOLVED: absent latest and authenticated trusted publisher setup require owner disposition before any upload",
+      );
     const inventory = new Map();
-    for (const name of packageNames)
+    for (const name of packageNamesForVersion(candidate.version))
       inventory.set(name, await readPackument(name));
     const order = recovery
       ? validateRecoveryInventory(inventory, candidate, recovery)
-      : publicationOrder();
+      : publicationOrder(candidate.version);
     const previousLatest = new Map();
     const previousAlpha = new Map();
     assert.deepEqual(
       plan.packages.map(({ name }) => name),
-      publicationOrder().map(packageName),
+      publicationOrder(candidate.version).map(packageName),
     );
     for (const entry of plan.packages) {
       const name = entry.name.slice("@capaxle/".length);
@@ -779,11 +1008,10 @@ export async function publishTrain(
       if (
         entry.sha256 !== candidate.packages[entry.name] ||
         entry.targetAlpha !== candidate.version ||
-        !state ||
-        state.name !== entry.name ||
+        (state && state.name !== entry.name) ||
         versionExists(state, candidate.version) !== !entry.pendingUpload ||
-        (state["dist-tags"]?.latest ?? null) !== entry.latest ||
-        (state["dist-tags"]?.[distTag] ?? null) !== entry.previousAlpha
+        (state?.["dist-tags"]?.latest ?? null) !== entry.latest ||
+        (state?.["dist-tags"]?.[distTag] ?? null) !== entry.previousAlpha
       )
         throw new Error(`${entry.name}: registry changed from frozen plan`);
       previousLatest.set(name, entry.latest ?? undefined);
@@ -805,7 +1033,7 @@ export async function publishTrain(
         ),
       );
     } else {
-      for (const name of packageNames) {
+      for (const name of packageNamesForVersion(candidate.version)) {
         const packument = inventory.get(name);
         if (
           !packument ||
@@ -843,7 +1071,7 @@ export async function publishTrain(
         `${packageName(name)}@${candidate.version}: registry bytes, tags, and provenance verified`,
       );
     }
-    for (const name of packageNames) {
+    for (const name of packageNamesForVersion(candidate.version)) {
       const original = recovery?.publishedPrefix.find(
         (entry) => entry.name === packageName(name),
       );
@@ -857,7 +1085,7 @@ export async function publishTrain(
     }
     await installRegistry(candidate.version);
     console.log(
-      `CAP_RELEASE_COMPLETE ${candidate.version}: all eleven packages and registry install verified`,
+      `CAP_RELEASE_COMPLETE ${candidate.version}: all ${plan.packages.length} packages and registry install verified`,
     );
   } catch (error) {
     const packages = await inventoryAfterFailure(candidate, readPackument);
@@ -905,11 +1133,10 @@ export function assertPrepareContext(env, repository) {
 }
 
 function validateOrdinaryInventory(inventory, candidate) {
-  for (const name of packageNames) {
+  for (const name of packageNamesForVersion(candidate.version)) {
     const packument = inventory.get(name);
     if (
-      !packument ||
-      packument.name !== packageName(name) ||
+      (packument && packument.name !== packageName(name)) ||
       versionExists(packument, candidate.version)
     )
       throw new Error(
@@ -955,7 +1182,14 @@ export function createReleasePlan(
     runAttempt: env.GITHUB_RUN_ATTEMPT,
     approval:
       "Review this exact record before approving npm-publish; approval authorizes only its pending npm uploads. Git tags require separate approval.",
-    packages: publicationOrder().map((name) => {
+    publicationBlockers: publicationOrder(candidate.version).some(
+      (name) => inventory.get(name)?.["dist-tags"]?.latest == null,
+    )
+      ? [
+          "New-name latest disposition and authenticated trusted-publisher setup unresolved; protected job stops before every upload.",
+        ]
+      : [],
+    packages: publicationOrder(candidate.version).map((name) => {
       const existing = recovery?.publishedPrefix.find(
         (entry) => entry.name === packageName(name),
       );
@@ -971,8 +1205,8 @@ export function createReleasePlan(
               runUrl: existing.runUrl,
             }
           : null,
-        previousAlpha: inventory.get(name)["dist-tags"]?.[distTag] ?? null,
-        latest: inventory.get(name)["dist-tags"]?.latest ?? null,
+        previousAlpha: inventory.get(name)?.["dist-tags"]?.[distTag] ?? null,
+        latest: inventory.get(name)?.["dist-tags"]?.latest ?? null,
         targetAlpha: candidate.version,
       };
     }),
@@ -1031,7 +1265,9 @@ export function validateReleaseArtifact(directory, version, hasPlan) {
   );
   const tarballs = resolve(directory, "tarballs");
   assertDirectory(tarballs);
-  const archives = packageNames.map((name) => archiveName(name, version));
+  const archives = packageNamesForVersion(version).map((name) =>
+    archiveName(name, version),
+  );
   assert.deepEqual(
     readdirSync(tarballs).sort(),
     [...archives].sort(),
@@ -1100,7 +1336,7 @@ function loadRelease(hasPlan) {
     version: candidate.version,
     packages: candidate.packages,
   });
-  for (const name of packageNames)
+  for (const name of packageNamesForVersion(candidate.version))
     inspectArchive(
       name,
       candidate.version,
@@ -1125,9 +1361,9 @@ function loadRelease(hasPlan) {
   };
 }
 
-async function readInventory() {
+async function readInventory(candidate) {
   const inventory = new Map();
-  for (const name of packageNames)
+  for (const name of packageNamesForVersion(candidate.version))
     inventory.set(name, await getPackument(name));
   return inventory;
 }
@@ -1135,7 +1371,7 @@ async function readInventory() {
 async function prepare() {
   const { candidate, recovery, source, candidateDigest, recoveryDigest } =
     loadRelease(false);
-  const inventory = await readInventory();
+  const inventory = await readInventory(candidate);
   const plan = createReleasePlan(
     candidate,
     recovery,
@@ -1174,7 +1410,8 @@ async function prepare() {
       [
         `## Exact npm release approval: ${plan.version}`,
         plan.approval,
-        "An authenticated local audit of all eleven npm trusted publishers must precede approval. Dispatch alone does not authorize upload.",
+        ...plan.publicationBlockers.map((blocker) => `**BLOCKED:** ${blocker}`),
+        "An authenticated local audit of all candidate npm trusted publishers must precede approval. Dispatch alone does not authorize upload.",
         `- Destination: ${registry}; dist-tag: ${distTag}; latest remains at the recorded values below.`,
         `- Private source: ${plan.sourceCommit}`,
         `- Public source: ${plan.mirrorCommit}`,
@@ -1205,7 +1442,7 @@ async function publish() {
     recovery,
     source,
     process.env,
-    await readInventory(),
+    await readInventory(candidate),
     candidateDigest,
     recoveryDigest,
   );

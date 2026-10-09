@@ -1,0 +1,50 @@
+{
+  "name": "@capaxle/app",
+  "version": "0.1.0-alpha.3",
+  "type": "module",
+  "engines": {
+    "node": "^22.15.0 || ^24.0.0"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./zod": {
+      "types": "./dist/zod.d.ts",
+      "import": "./dist/zod.js"
+    },
+    "./build": {
+      "types": "./dist/build.d.ts",
+      "import": "./dist/build.js"
+    }
+  },
+  "files": [
+    "dist/**/*.{js,mjs,cjs,ts,mts,cts,map,json}",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@capaxle/core": "0.1.0-alpha.3",
+    "@capaxle/ir": "0.1.0-alpha.3",
+    "@capaxle/schema-zod": "0.1.0-alpha.3",
+    "@capaxle/compiler": "0.1.0-alpha.3",
+    "@capaxle/runtime": "0.1.0-alpha.3",
+    "@capaxle/adapter-http": "0.1.0-alpha.3",
+    "@capaxle/adapter-mcp": "0.1.0-alpha.3",
+    "@capaxle/adapter-cli": "0.1.0-alpha.3",
+    "@capaxle/generator-docs": "0.1.0-alpha.3",
+    "@capaxle/docs-styles": "0.1.0-alpha.3",
+    "typescript": "6.0.3"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trevor-gibby/capaxle-public.git",
+    "directory": "packages/app"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

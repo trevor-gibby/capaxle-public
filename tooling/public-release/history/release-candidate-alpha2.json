@@ -1,0 +1,19 @@
+{
+  "publicRepository": "trevor-gibby/capaxle-public",
+  "version": "0.1.0-alpha.2",
+  "registry": "https://registry.npmjs.org/",
+  "distTag": "alpha",
+  "packages": {
+    "@capaxle/ir": "f3d8f1217afa6f12bfe10c2c504a44c4337a12cbcf954e4e8c3760a0acf09beb",
+    "@capaxle/core": "b80d1f40f630b7a65e3dc2cc0b7ec39d65aa3e48894067d77d95d1b9b57eeeed",
+    "@capaxle/schema-zod": "48f0b792fef808edee932636bf40625349e7ae49e16f8ca5ab5a7d694aaa9d1d",
+    "@capaxle/compiler": "d63997e074969ebbeb9aac60fe122f69e79c9af5db670ff5236877636717c4da",
+    "@capaxle/runtime": "c1053935120677a669d28db19e4b344a64206933870088fb27f9a4ffc2a95107",
+    "@capaxle/adapter-http": "fe120a6e2018eb9efd101b242094a1a9224b12010152860b6e9e79bc5d15ca87",
+    "@capaxle/adapter-cli": "b7a1d0d4ee7e794a2de910d5237c50b553626473c472801f099109d1fae4c106",
+    "@capaxle/adapter-mcp": "aa9def6fffa1bc0c4378663a88077852e7e8d074bfe442f0e1c8eea3b5a4cce4",
+    "@capaxle/generator-docs": "6f23ea48c361ced084e8e7a22476a3a4bbbb086cf00f118f3d38d38276957bdd",
+    "@capaxle/generator-sdk-ts": "71969849ae7e8849cf92e09927a220c4e4aee101ef8bf99de34ec6c21cf58a64",
+    "@capaxle/cli": "41193299bc29bd3ea567fe1618bbf8f1270287e0fde33d66f52ccb7b464ba086"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "@capaxle/create",
+  "version": "0.1.0-alpha.3",
+  "type": "module",
+  "engines": {
+    "node": "^22.15.0 || ^24.0.0"
+  },
+  "bin": {
+    "create-capaxle": "./dist/bin.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/**/*.{js,mjs,cjs,ts,mts,cts,map,json}",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/trevor-gibby/capaxle-public.git",
+    "directory": "packages/create"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "alpha"
+  }
+}

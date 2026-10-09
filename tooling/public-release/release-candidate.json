@@ -1,19 +1,23 @@
 {
   "publicRepository": "trevor-gibby/capaxle-public",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "registry": "https://registry.npmjs.org/",
   "distTag": "alpha",
   "packages": {
-    "@capaxle/ir": "f3d8f1217afa6f12bfe10c2c504a44c4337a12cbcf954e4e8c3760a0acf09beb",
-    "@capaxle/core": "b80d1f40f630b7a65e3dc2cc0b7ec39d65aa3e48894067d77d95d1b9b57eeeed",
-    "@capaxle/schema-zod": "48f0b792fef808edee932636bf40625349e7ae49e16f8ca5ab5a7d694aaa9d1d",
-    "@capaxle/compiler": "d63997e074969ebbeb9aac60fe122f69e79c9af5db670ff5236877636717c4da",
-    "@capaxle/runtime": "c1053935120677a669d28db19e4b344a64206933870088fb27f9a4ffc2a95107",
-    "@capaxle/adapter-http": "fe120a6e2018eb9efd101b242094a1a9224b12010152860b6e9e79bc5d15ca87",
-    "@capaxle/adapter-cli": "b7a1d0d4ee7e794a2de910d5237c50b553626473c472801f099109d1fae4c106",
-    "@capaxle/adapter-mcp": "aa9def6fffa1bc0c4378663a88077852e7e8d074bfe442f0e1c8eea3b5a4cce4",
-    "@capaxle/generator-docs": "6f23ea48c361ced084e8e7a22476a3a4bbbb086cf00f118f3d38d38276957bdd",
-    "@capaxle/generator-sdk-ts": "71969849ae7e8849cf92e09927a220c4e4aee101ef8bf99de34ec6c21cf58a64",
-    "@capaxle/cli": "41193299bc29bd3ea567fe1618bbf8f1270287e0fde33d66f52ccb7b464ba086"
+    "@capaxle/ir": "8dcb7195ced2d8780e19dcd2d061a14c9cfbedde8dd2ffafe3b986804425436b",
+    "@capaxle/core": "d108530ae09d0fb0f0cb87f21e32c2dd75fef04975418bee1555a71459cffd2b",
+    "@capaxle/schema-zod": "cfd89461f6f254e41d0d9d1a42b8ccb0b7dc4e6d0d9c27ffcc9d76942c735687",
+    "@capaxle/compiler": "05618ab86e55024a77727d5b76e9fb3b9ac8a3cf5cda30305f7920e04f8d0f1e",
+    "@capaxle/runtime": "413b3ab70a93eee1e18b586ad5581f20e3edfad5f4f89739597d0b70de8e3047",
+    "@capaxle/adapter-http": "18fc6b19ecd2ae38039c925476039560216f71c72af9d2543358ceeabec5d116",
+    "@capaxle/adapter-cli": "b4aa9d3d2621cf1c35cdbbdbd249d9fc85ba03b54995c5a392d50e1de6e4d25a",
+    "@capaxle/adapter-mcp": "8c61bf20c0afcded827101ba03e36f23ebd6f1f24174fbfce9d46ec38c434608",
+    "@capaxle/generator-docs": "5ee8209b832ea8788aafdeeb4f4e3571de045a93ac35bd9f0145af12fe9bdcff",
+    "@capaxle/generator-sdk-ts": "39675367a1f864fd4983251826bedf7e2495232ef7758d1c37379a617912a463",
+    "@capaxle/docs-styles": "3faa2c976dd8d44297800c636275a0e758e0d75b808e2578fd0b31fd1b08b000",
+    "@capaxle/app": "1ed4b9a066c22511ba4ccbbdca16586ab6ed05d6580e579f88ef7939a924b239",
+    "@capaxle/cli": "fccdf7d84d0bcf3533afba34ae7cd68acbc292a9a506f85f0843b970e08888f2",
+    "@capaxle/client": "b21cf7cf48394b2207d7dde58933254cf3570df729a5ead8c36e703f3490d009",
+    "@capaxle/create": "e436af3f3761c7660c9319567f11edf9807ba1bb852749bdc5242b164a29670c"
   }
 }

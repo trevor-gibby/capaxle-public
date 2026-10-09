@@ -6,8 +6,9 @@ The `/mcp` host supports discovery-era `2026-07-28` and initialization-era
 `2025-11-25` Streamable HTTP unary tools on the same endpoint. The exact targets
 are `mcp@2026-07-28/streamable-http/tools-unary-v3` and
 `mcp@2025-11-25/streamable-http/tools-unary-v3`, both with Capaxle metadata
-profile `0.3`. Server/core/node SDK packages are pinned to `2.1.0`; the legacy
-server transport is pinned to `@modelcontextprotocol/sdk@1.30.1`.
+profile `0.3`. Server/core SDK packages are pinned to `2.2.0`, with the compatible
+node package at `2.1.0`; the legacy server transport is pinned to
+`@modelcontextprotocol/sdk@1.32.1`.
 
 Modern requests carry the standard protocol-version and client-capabilities
 metadata plus matching MCP headers. Legacy clients initialize, send the

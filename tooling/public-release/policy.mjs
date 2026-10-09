@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export const packageEdges = Object.freeze({
+export const historicalPackageEdges = Object.freeze({
   ir: [],
   core: ["ir"],
   "schema-zod": ["core", "ir"],
@@ -24,7 +24,37 @@ export const packageEdges = Object.freeze({
   ],
 });
 
+export const historicalPackageNames = Object.freeze(
+  Object.keys(historicalPackageEdges),
+);
+export const packageEdges = Object.freeze({
+  ...historicalPackageEdges,
+  "docs-styles": [],
+  app: [
+    "core",
+    "ir",
+    "schema-zod",
+    "compiler",
+    "runtime",
+    "adapter-http",
+    "adapter-cli",
+    "adapter-mcp",
+    "generator-docs",
+    "docs-styles",
+  ],
+  client: ["ir"],
+  create: [],
+  cli: [...historicalPackageEdges.cli, "app"],
+});
 export const packageNames = Object.freeze(Object.keys(packageEdges));
+export const packageNamesForVersion = (version) =>
+  ["0.1.0-alpha.1", "0.1.0-alpha.2"].includes(version)
+    ? historicalPackageNames
+    : packageNames;
+const edgesForVersion = (version) =>
+  ["0.1.0-alpha.1", "0.1.0-alpha.2"].includes(version)
+    ? historicalPackageEdges
+    : packageEdges;
 export const registry = "https://registry.npmjs.org/";
 export const distTag = "alpha";
 const hex40 = /^[a-f0-9]{40}$/;
@@ -59,7 +89,7 @@ export function validateCandidate(candidate, repository) {
     throw new Error("release candidate: public repository changed");
   assertExactKeys(
     candidate.packages,
-    packageNames.map((name) => `@capaxle/${name}`),
+    packageNamesForVersion(candidate.version).map((name) => `@capaxle/${name}`),
     "release candidate packages",
   );
   for (const [name, digest] of Object.entries(candidate.packages))
@@ -116,6 +146,61 @@ export function validatePackageManifest(manifest, name, version, repository) {
       `${fullName}: repository provenance does not match public repo`,
     );
 
+  if (name === "docs-styles") {
+    if (
+      JSON.stringify(manifest.exports) !==
+        JSON.stringify({ "./docs.css": "./docs.css" }) ||
+      JSON.stringify(manifest.files) !==
+        JSON.stringify(["docs.css", "README.md", "LICENSE"]) ||
+      [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+        "bin",
+        "main",
+        "types",
+        "scripts",
+      ].some((field) => manifest[field] !== undefined)
+    )
+      throw new Error(`${fullName}: CSS-only package surface changed`);
+  }
+  if (["app", "client", "create"].includes(name)) {
+    const entries = name === "app" ? [".", "./zod", "./build"] : ["."];
+    assertExactKeys(manifest.exports, entries, `${fullName} exports`);
+    for (const entry of entries) {
+      const stem = entry === "." ? "index" : entry.slice(2);
+      assertExactKeys(
+        manifest.exports[entry],
+        ["types", "import"],
+        `${fullName} export ${entry}`,
+      );
+      if (
+        manifest.exports[entry].types !== `./dist/${stem}.d.ts` ||
+        manifest.exports[entry].import !== `./dist/${stem}.js`
+      )
+        throw new Error(`${fullName}: export target changed`);
+    }
+    if (
+      name === "app"
+        ? manifest.bin !== undefined
+        : JSON.stringify(manifest.bin) !==
+          JSON.stringify({
+            [name === "client" ? "capaxle-client" : "create-capaxle"]:
+              "./dist/bin.js",
+          })
+    )
+      throw new Error(`${fullName}: binary surface changed`);
+  }
+
+  if (
+    ["create", "client"].includes(name) &&
+    Object.keys(manifest.dependencies ?? {}).some(
+      (dependency) => !dependency.startsWith("@capaxle/"),
+    )
+  )
+    throw new Error(`${fullName}: unexpected external dependency`);
+
   const actualEdges = Object.entries(manifest.dependencies ?? {})
     .filter(([dependency]) => dependency.startsWith("@capaxle/"))
     .map(([dependency, pinned]) => {
@@ -126,7 +211,7 @@ export function validatePackageManifest(manifest, name, version, repository) {
     .sort();
   if (
     JSON.stringify(actualEdges) !==
-    JSON.stringify([...packageEdges[name]].sort())
+    JSON.stringify([...edgesForVersion(version)[name]].sort())
   )
     throw new Error(`${fullName}: internal dependency graph changed`);
   for (const field of [
@@ -142,15 +227,16 @@ export function validatePackageManifest(manifest, name, version, repository) {
       throw new Error(`${fullName}: unexpected internal ${field}`);
 }
 
-export function publicationOrder() {
+export function publicationOrder(version) {
+  const edges = edgesForVersion(version);
   const sorted = [];
   const visited = new Set();
   const visit = (name) => {
     if (visited.has(name)) return;
-    for (const dependency of packageEdges[name]) visit(dependency);
+    for (const dependency of edges[name]) visit(dependency);
     visited.add(name);
     sorted.push(name);
   };
-  for (const name of packageNames) visit(name);
+  for (const name of packageNamesForVersion(version)) visit(name);
   return sorted;
 }

@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"],
+    "tsBuildInfoFile": "dist/tsconfig.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../ir" },
+    { "path": "../schema-zod" },
+    { "path": "../compiler" },
+    { "path": "../runtime" },
+    { "path": "../adapter-http" },
+    { "path": "../adapter-mcp" },
+    { "path": "../adapter-cli" },
+    { "path": "../generator-docs" }
+  ]
+}

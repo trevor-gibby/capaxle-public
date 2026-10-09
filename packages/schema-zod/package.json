@@ -1,6 +1,6 @@
 {
   "name": "@capaxle/schema-zod",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "type": "module",
   "engines": {
     "node": "^22.15.0 || ^24.0.0"
@@ -17,8 +17,8 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@capaxle/core": "0.1.0-alpha.2",
-    "@capaxle/ir": "0.1.0-alpha.2",
+    "@capaxle/core": "0.1.0-alpha.3",
+    "@capaxle/ir": "0.1.0-alpha.3",
     "zod": "4.5.2"
   },
   "license": "Apache-2.0",

@@ -38,7 +38,7 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm run build
-      - name: Pack and check all eleven packages
+      - name: Pack and check all fifteen packages
         run: node tooling/public-release/release.mjs pack
       - name: Enable registry signature audit
         run: npm install --global npm@11.5.1
